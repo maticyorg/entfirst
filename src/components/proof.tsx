@@ -37,14 +37,14 @@ export function Proof() {
           </div>
         </div>
 
-        <figure className="mt-12 rounded-2xl border border-dashed border-white/15 bg-zinc-950/50 p-8 sm:p-10">
+        <figure className="mt-12 rounded-2xl border border-white/15 bg-zinc-950/50 p-8 sm:p-10">
           <Quote className="h-8 w-8 text-brand/80 mb-4" aria-hidden />
           <blockquote className="text-lg sm:text-xl text-zinc-200 leading-relaxed max-w-3xl">
-            “Placeholder for your first public testimonial—swap in a quote from a reference customer when
-            ready.”
+            &ldquo;This is much better than Cision or Meltwater for us, better focus and better price
+            level!&rdquo;
           </blockquote>
           <figcaption className="mt-6 text-sm text-muted-foreground font-mono">
-            Name, Title · Company (optional)
+            Tobias Larsson, Head of Communication &middot; AIK Fotboll
           </figcaption>
         </figure>
       </div>
