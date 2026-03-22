@@ -12,9 +12,9 @@ export function About() {
               Enterprise First AB
             </h2>
             <p className="mt-6 text-muted-foreground text-lg leading-relaxed">
-              We are a Stockholm-based consultancy shipping AI-powered media products. Our model is
-              simple: reusable pipelines, strict quality gates, and delivery that fits how enterprises
-              actually operate—not one-off demos.
+              We are a Stockholm-based AI consultancy delivering services powered by reusable, production-grade
+              assets. Our model is simple: shared pipelines, strict quality gates, and delivery that fits
+              how enterprises actually operate\u2014not one-off demos.
             </p>
             <p className="mt-4 text-muted-foreground leading-relaxed">
               Whether you need pages that rank, brands that are watched, venues that ride event demand,

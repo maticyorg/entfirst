@@ -31,7 +31,7 @@ export function Engine() {
           One engine. Every signal.
         </h2>
         <p className="mt-4 max-w-2xl text-muted-foreground text-lg">
-          All Enterprise First products run on the same media intelligence core—normalize, enrich, and
+          Every Enterprise First service runs on the same media intelligence core\u2014normalize, enrich, and
           deliver what your teams actually use.
         </p>
 

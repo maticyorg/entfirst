@@ -5,7 +5,7 @@ import { Linkedin, Twitter } from "lucide-react";
 const footerLinks = [
   { href: "#services", label: "Services" },
   { href: "#engine", label: "Engine" },
-  { href: "#portfolio", label: "Portfolio" },
+  { href: "#portfolio", label: "Verticals" },
   { href: "#proof", label: "Proof" },
   { href: "#about", label: "About" },
   { href: "#contact", label: "Contact" },
@@ -20,8 +20,8 @@ export function Footer() {
           <div>
             <Logo />
             <p className="mt-4 text-sm text-muted-foreground max-w-xs leading-relaxed">
-              AI assets and media intelligence from Stockholm—built for teams that ship under real
-              constraints.
+              AI consultancy and media intelligence from Stockholm\u2014services and assets built for teams
+              that operate under real constraints.
             </p>
           </div>
           <nav className="flex flex-wrap gap-x-8 gap-y-3 text-sm text-muted-foreground">

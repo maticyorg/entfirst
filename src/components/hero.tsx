@@ -36,8 +36,8 @@ export function Hero() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.55, delay: 0.12 }}
         >
-          Enterprise First AB builds production-grade AI offerings on a shared media intelligence
-          engine—news, forums, video, podcasts, and analytics—so you ship faster with less risk.
+          Enterprise First AB is an AI consultancy delivering services on a shared media intelligence
+          engine\u2014news, forums, video, podcasts, and analytics\u2014so you grow faster with less risk.
         </motion.p>
         <motion.div
           className="mt-10 flex flex-col sm:flex-row gap-3 sm:gap-4"

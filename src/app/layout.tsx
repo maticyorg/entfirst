@@ -45,13 +45,13 @@ export const metadata: Metadata = {
     siteName: "Enterprise First",
     title: "Enterprise First | AI assets & media intelligence",
     description:
-      "AI-powered products for content, brand surveillance, events, media agencies, and customer segments—built on a unified intelligence engine.",
+      "AI consultancy services for content, brand surveillance, events, media agencies, and customer segments\u2014powered by a unified intelligence engine.",
   },
   twitter: {
     card: "summary_large_image",
     title: "Enterprise First | AI assets & media intelligence",
     description:
-      "AI-powered products for content, brand surveillance, events, media agencies, and customer segments.",
+      "AI consultancy services for content, brand surveillance, events, media agencies, and customer segments.",
   },
   robots: {
     index: true,
