@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { MotionSection } from "@/components/motion-section";
 import { ShoppingBag, Trophy, Quote } from "lucide-react";
 
@@ -40,11 +41,20 @@ export function Proof() {
         <figure className="mt-12 rounded-2xl border border-white/15 bg-zinc-950/50 p-8 sm:p-10">
           <Quote className="h-8 w-8 text-brand/80 mb-4" aria-hidden />
           <blockquote className="text-lg sm:text-xl text-zinc-200 leading-relaxed max-w-3xl">
-            &ldquo;This is much better than Cision or Meltwater for us, better focus and better price
-            level!&rdquo;
+            {"\u201C"}This is much better than Cision or Meltwater for us{" \u2013 "}more relevant
+            data, better focus, and a significantly lower cost.{"\u201D"}
           </blockquote>
-          <figcaption className="mt-6 text-sm text-muted-foreground font-mono">
-            Tobias Larsson, Head of Communication &middot; AIK Fotboll
+          <figcaption className="mt-6 flex items-center gap-3">
+            <Image
+              src="/aik-crest.png"
+              alt="AIK Fotboll"
+              width={36}
+              height={36}
+              className="rounded-sm shrink-0"
+            />
+            <span className="text-sm text-muted-foreground font-mono">
+              Tobias Larsson, Head of Communication {"\u00B7"} AIK Fotboll
+            </span>
           </figcaption>
         </figure>
       </div>
