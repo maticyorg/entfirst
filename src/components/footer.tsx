@@ -5,6 +5,7 @@ import { Linkedin, Twitter } from "lucide-react";
 const footerLinks = [
   { href: "#services", label: "Services" },
   { href: "#engine", label: "Engine" },
+  { href: "#portfolio", label: "Portfolio" },
   { href: "#proof", label: "Proof" },
   { href: "#about", label: "About" },
   { href: "#contact", label: "Contact" },

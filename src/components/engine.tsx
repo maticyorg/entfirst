@@ -76,6 +76,29 @@ export function Engine() {
             })}
           </ul>
         </div>
+
+        <div className="mt-14 grid gap-4 md:grid-cols-2">
+          <blockquote className="rounded-xl border-l-2 border-brand/40 bg-zinc-900/30 px-5 py-4">
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              &ldquo;AI is a driving factor throughout the entire media production chain, from creation
+              to distribution. Content can be continuously analyzed and adapted based on direct feedback
+              from users.&rdquo;
+            </p>
+            <footer className="mt-3 text-xs font-mono text-zinc-500">
+              Deloitte &mdash; Digital Media Trends
+            </footer>
+          </blockquote>
+          <blockquote className="rounded-xl border-l-2 border-brand/40 bg-zinc-900/30 px-5 py-4">
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              &ldquo;Future media consumers will expect immediate, seamless access to relevant content
+              across multiple platforms. Data- and insight-driven strategies are increasingly important
+              for creating value.&rdquo;
+            </p>
+            <footer className="mt-3 text-xs font-mono text-zinc-500">
+              PwC &mdash; Global Entertainment &amp; Media Outlook
+            </footer>
+          </blockquote>
+        </div>
       </div>
     </MotionSection>
   );
