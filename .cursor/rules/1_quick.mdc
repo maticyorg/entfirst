@@ -1,0 +1,375 @@
+yes, if it is accordin to 
+---
+alwaysApply: true
+---
+
+# Aikurerad v2 - Quick Reference (Continue Optimized)
+
+**Token Budget: ~2.5K (optimized for Qwen 30B's 8K context)**
+
+---
+
+## 🚨 KRITISK INSTRUKTION: Hierarkisk Sökning
+
+**ALDRIG säg "jag har inte tillräcklig info" utan att FÖRST ha sökt hierarkiskt i rätt fil!**
+
+### Sökordning (ALLTID):
+1. **quick.mdc** (denna fil) - Kritiska mönster, STOP-WORDS
+2. **Om behöver mer info:** SÖK i rätt fil nedan (använd INDEX)
+3. **Ge svar** baserat på vad du hittar
+
+### Exempel på RÄTT beteende:
+```
+User: "Hur fungerar YouTube pipeline requirements?"
+Agent: [Läser quick.mdc]
+       [Ser: Pipeline = requirements.mdc]
+       [Laddar: @file .cursor/rules/requirements.mdc [1, 50]]
+       [Läser INDEX, hittar §R1 YouTube Pipeline]
+       [Laddar: @file .cursor/rules/requirements.mdc [R1 lines]]
+       [Ger svar baserat på innehåll]
+```
+
+### Exempel på FEL beteende:
+```
+User: "Hur fungerar YouTube pipeline requirements?"
+Agent: "Jag har inte tillräcklig information"  ❌ WRONG!
+       (Skulle ha sökt i requirements.mdc FÖRST!)
+```
+
+---
+
+## 📚 HIERARKISK FILSTRUKTUR
+
+**5 filer - Sök i RÄTT fil för ditt ämne:**
+
+### 1. quick.mdc (denna fil) ← DU ÄR HÄR
+**Innehåller:** Kritiska mönster, STOP-WORDS, Hierarkisk index till andra filer  
+**Använd:** Alltid laddad, ge snabba svar
+
+### 2. core-rules.mdc (HOW - Implementation)
+**Innehåller:** Schema, RLS, Edge Functions, MCP, Migrations, Type Gen  
+**Använd när:** SQL-arbete, Edge Functions, databas-implementation  
+**Ladda INDEX:** `@file .cursor/rules/core-rules.mdc [1, 50]`
+
+### 3. requirements.mdc (WHAT - Funktionella krav)
+**Innehåller:** Pipeline requirements, Trusted Channels, Content Filtering, User Tiers  
+**Använd när:** Behöver förstå VARFÖR/VAD systemet ska göra  
+**Ladda INDEX:** `@file .cursor/rules/requirements.mdc [1, 50]`
+
+### 4. pipeline-rules.mdc (HOW - Pipeline Implementation)
+**Innehåller:** YouTube Pipeline implementation, Edge Function patterns  
+**Använd när:** Implementera fetch/transform/distribute logik  
+**Ladda INDEX:** `@file .cursor/rules/pipeline-rules.mdc [1, 100]`
+
+### 5. advanced-rules.mdc (WHY - Historik & Edge Cases)
+**Innehåller:** Historiska beslut, komplexa edge cases, optimeringar  
+**Använd när:** Behöver förstå VARFÖR beslut togs  
+**Ladda INDEX:** `@file .cursor/rules/advanced-rules.mdc [1, 50]`
+
+---
+
+## 🔍 HIERARKISK SÖKGUIDE - Steg för Steg
+
+### Scenario 1: Frågor om Requirements/Funktionalitet
+
+**Om du inte förstår:**
+- YouTube Pipeline requirements → `@file .cursor/rules/requirements.mdc [1, 50]` → Leta §R1
+- Trusted Channels requirements → `@file .cursor/rules/requirements.mdc [1, 50]` → Leta §R2
+- User Tiers/Quotas → `@file .cursor/rules/requirements.mdc [1, 50]` → Leta §R6
+- AI Processing requirements → `@file .cursor/rules/requirements.mdc [1, 50]` → Leta §R7
+
+**Pattern:**
+1. Ladda INDEX från requirements.mdc
+2. Hitta rätt § (R1-R9)
+3. Ladda den sektionen
+4. Ge svar
+
+### Scenario 2: Frågor om Implementation/HOW
+
+**Om du inte förstår:**
+- Schema-fel (42P01) → `@file .cursor/rules/core-rules.mdc [1, 50]` → Leta §1 Schema Reality Check
+- RLS Policies → `@file .cursor/rules/core-rules.mdc [1, 50]` → Leta §5 RLS
+- Edge Functions JWT → `@file .cursor/rules/core-rules.mdc [1, 50]` → Leta §0.5 Edge Functions
+- MCP Workflow → `@file .cursor/rules/core-rules.mdc [1, 50]` → Leta §0.8 MCP
+
+**Pattern:**
+1. Ladda INDEX från core-rules.mdc
+2. Hitta rätt § (0-12)
+3. Ladda den sektionen
+4. Ge svar
+
+### Scenario 3: Frågor om Pipeline Implementation
+
+**Om du inte förstår:**
+- Hur implementera fetch phase → `@file .cursor/rules/pipeline-rules.mdc [1, 100]` → Leta fetch patterns
+- Hur transformera videos → `@file .cursor/rules/pipeline-rules.mdc [1, 100]` → Leta transform patterns
+- Edge Function patterns → `@file .cursor/rules/pipeline-rules.mdc [1, 100]` → Leta Edge Function section
+- **Visuella pipeline diagrams** → `@file .cursor/rules/pipeline-rules.mdc [1, 100]` → Leta §DIAGRAMS
+
+**Pattern:**
+1. Ladda INDEX från pipeline-rules.mdc
+2. Hitta rätt implementation section
+3. Ladda den sektionen
+4. Ge svar
+
+**För visuella flowcharts:**
+1. Ladda INDEX från pipeline-rules.mdc
+2. Hitta §DIAGRAMS (lines ~750-800)
+3. Följ pointer till docs/pipeline-analysis
+4. Välj rätt diagram baserat på behov
+
+---
+
+## 🔴 TOP 5 CRITICAL (Always Apply)
+
+### 1. Production = MCP Only
+```
+✅ Use: mcp_supabase_AIK_execute_sql, mcp_supabase_AIK_deploy_edge_function
+❌ NEVER: npx supabase (requires local Docker, production is remote)
+```
+**Mer info:** `@file .cursor/rules/core-rules.mdc` → §0.8 MCP Workflow
+
+### 2. Schema Qualification (ALLTID)
+```sql
+✅ CORRECT:
+SELECT * FROM api_public.video_segments_feed;
+SELECT * FROM public.youtube_videos_staging;
+
+❌ WRONG:
+SELECT * FROM video_segments_feed;  -- Vilket schema?!
+```
+**Mer info:** `@file .cursor/rules/core-rules.mdc` → §1 Schema Reality Check
+
+### 3. Edge Functions → JWT Forwarding
+```typescript
+✅ CORRECT:
+const authHeader = req.headers.get('Authorization');
+const supabase = createClient(URL, SERVICE_ROLE_KEY, {
+  global: { headers: { Authorization: authHeader }}
+});
+
+❌ WRONG:
+const supabase = createClient(URL, SERVICE_ROLE_KEY);
+// RLS vyer returnerar TOM data (auth.uid() = NULL)
+```
+**Mer info:** `@file .cursor/rules/core-rules.mdc` → §0.5 Edge Functions
+
+### 4. Frontend → api_public ENDAST
+```typescript
+✅ CORRECT:
+await supabase.schema('api_public').from('video_segments_feed').select();
+
+❌ WRONG:
+await supabase.from('youtube_videos_staging').select();
+// PostgREST kan inte komma åt public schema!
+```
+**Mer info:** `@file .cursor/rules/core-rules.mdc` → §12 Troubleshooting PostgREST
+
+### 5. Types → ALLTID Inkludera api_public
+```bash
+✅ CORRECT:
+npm run types:all
+# Eller: npx supabase gen types typescript --schema public --schema api_public
+
+❌ WRONG:
+npx supabase gen types typescript
+# Genererar ENDAST public → api_public saknas → TypeScript-fel!
+```
+**Mer info:** `@file .cursor/rules/core-rules.mdc` → §0.7 Type Generation
+
+---
+
+## 🛑 STOP-WORDS → Hierarkisk Lookup
+
+**När du ser error code, SÖK DIREKT i rätt fil:**
+
+### HTTP Status Codes
+- **406 Not Acceptable** → `@file .cursor/rules/core-rules.mdc` → §12 PostgREST Troubleshooting
+- **401 Unauthorized** → `@file .cursor/rules/core-rules.mdc` → §0.5 Edge Functions JWT
+- **403 Forbidden** → `@file .cursor/rules/core-rules.mdc` → §5 RLS Policies
+
+### PostgREST Error Codes
+- **PGRST106** → `@file .cursor/rules/core-rules.mdc` → §12 (Schema not exposed)
+- **PGRST301** → `@file .cursor/rules/core-rules.mdc` → §5 (RLS violation)
+
+### PostgreSQL Error Codes
+- **42P01** (relation does not exist) → `@file .cursor/rules/core-rules.mdc` → §1 Schema Reality Check
+- **42501** (insufficient privilege) → `@file .cursor/rules/core-rules.mdc` → §5 RLS
+- **42883** (function does not exist) → `@file .cursor/rules/core-rules.mdc` → §1 Schema Reality Check
+
+### Language Detection / Spam Filtering (OpenRouter LLM - Updated 2026-02-01)
+- **Spam videos passing through** → `@file .cursor/rules/core-rules.mdc` → §0.65 Language Detection
+- **OPEN_ROUTER_API** → `@file .cursor/rules/core-rules.mdc` → §0.65 Language Detection
+- **Valid videos rejected** → `@file .cursor/rules/core-rules.mdc` → §0.65 Language Detection (Bypass Rules)
+
+### YouTube Pipeline / fetch2 Integration (CRITICAL 2026-01-27)
+- **⚠️ fetch2 NOT integrated** → `@file .cursor/rules/FETCH2_INTEGRATION_CRITICAL_2026-01-27.md`
+- **0 videos from trusted channels** → fetch2 missing from Inngest workflow
+- **Per-channel incremental** → fetch2 needs individual timestamps per channel
+- **youtube_channel_config** → EXCEPTION LIST (not whitelist!)
+
+### Supabase Security Advisor Codes
+- 🛑 **0011 function_search_path_mutable** → Function lacks SET search_path → `@file .cursor/rules/core-rules.mdc` → §0 Absoluta krav + §5.5
+- 🛑 **0010 security_definer_view** → View is SECURITY DEFINER → `@file .cursor/rules/core-rules.mdc` → §5.5 (often false positive for this project)
+
+---
+
+## 🎯 DECISION TREES - Vilken fil ska jag söka i?
+
+### Frågan handlar om WHAT (Vad systemet ska göra)?
+→ **requirements.mdc**
+- Exempel: "Vilka channels är trusted?" → §R2 Trusted Channels
+- Exempel: "Vilka tiers finns?" → §R6 User Tiers
+- Exempel: "Vad är pipeline flow?" → §R1 Pipeline Requirements
+
+### Frågan handlar om HOW (Hur implementera)?
+→ **core-rules.mdc** ELLER **pipeline-rules.mdc**
+- Exempel: "Hur implementera RLS?" → core-rules.mdc §5
+- Exempel: "Hur implementera fetch phase?" → pipeline-rules.mdc
+- Exempel: "Hur skapa migration?" → core-rules.mdc §8-9
+
+### Frågan handlar om WHY (Varför)?
+→ **advanced-rules.mdc**
+- Exempel: "Varför valde vi SECURITY DEFINER här?" → advanced-rules.mdc
+- Exempel: "Varför inte exponera staging tables?" → advanced-rules.mdc
+
+### Frågan handlar om Error/Problem?
+→ **core-rules.mdc** (check STOP-WORDS först)
+- Exempel: "Error 42P01" → core-rules.mdc §1
+- Exempel: "Error 406" → core-rules.mdc §12
+
+---
+
+## 💡 KONKRETA EXEMPEL - Hierarkisk Sökning
+
+### Exempel 1: Fråga om YouTube Pipeline
+```
+User: "Jag förstår inte hur YouTube pipeline fungerar"
+
+Agent gör:
+1. Läser quick.mdc (denna fil)
+2. Ser: Pipeline requirements = requirements.mdc
+3. Laddar: @file .cursor/rules/requirements.mdc [1, 50]
+4. Läser INDEX, hittar §R1 YouTube Pipeline Requirements
+5. Laddar: @file .cursor/rules/requirements.mdc [§R1 lines]
+6. Läser §R1, förstår: Fetch → Transform → Distribute
+7. Svarar användaren med info från §R1
+
+Om user frågar HOW to implement:
+8. Laddar: @file .cursor/rules/pipeline-rules.mdc [§13]
+9. Läser implementation detaljer
+10. Ger komplett svar
+```
+
+### Exempel 2: Fråga om Trusted Channels
+```
+User: "Vilka channels är trusted?"
+
+Agent gör:
+1. Läser quick.mdc
+2. Ser: Trusted Channels = requirements.mdc §R2
+3. Laddar: @file .cursor/rules/requirements.mdc [§R2]
+4. Läser: SVT Sport, TV4 Sport, Fotbollskanalen
+5. Svarar: "Trusted channels är: SVT Sport (UCXXX), TV4 Sport (UCYYY), Fotbollskanalen (UCZZZ)"
+
+Om user frågar HOW to implement:
+6. Laddar: @file .cursor/rules/pipeline-rules.mdc [Trusted Channels Implementation]
+7. Visar kod-exempel
+```
+
+### Exempel 3: Error 42P01
+```
+User: "Jag får error 42P01"
+
+Agent gör:
+1. Läser quick.mdc STOP-WORDS
+2. Ser: 42P01 = relation does not exist → core-rules.mdc §1
+3. Laddar: @file .cursor/rules/core-rules.mdc [§1 Schema Reality Check]
+4. Läser: "ALLTID schema-kvalificera..."
+5. Svarar: "Felet beror på att du saknar schema-kvalificering. Använd api_public.X eller public.Y"
+```
+
+### Exempel 4: Fråga om User Tiers
+```
+User: "Vilka user tiers finns och vad kostar de?"
+
+Agent gör:
+1. Läser quick.mdc
+2. Ser: User Tiers = requirements.mdc §R6
+3. Laddar: @file .cursor/rules/requirements.mdc [§R6]
+4. Läser tier definitions: free (0 SEK), basic (49 SEK), premium (99 SEK)
+5. Svarar med komplett tier-info
+
+Om user frågar HOW to implement tier checks:
+6. Laddar: @file .cursor/rules/core-rules.mdc [§2-4 User State]
+7. Visar hur man använder my_account_state view
+```
+
+---
+
+## ⚡ QUICK REFERENCE - Vanliga Ämnen
+
+| Ämne | Fil | Sektion | Första Steg |
+|------|-----|---------|-------------|
+| Pipeline requirements (WHAT) | requirements.mdc | §R1 | Ladda INDEX först |
+| Pipeline implementation (HOW) | pipeline-rules.mdc | §13 | Ladda INDEX först |
+| **Pipeline diagrams (VISUAL)** | **pipeline-rules.mdc** | **§DIAGRAMS** | **Ladda INDEX först** |
+| **Perplexity Scraper (RSS fetch)** | pipeline-rules.mdc + docs | INDEX → Perplexity row; `docs/pipeline-analysis/perplexity_scraper.md` | Ladda INDEX pipeline-rules.mdc eller doc |
+| Trusted Channels (WHAT) | requirements.mdc | §R2 | Ladda INDEX först |
+| Trusted Channels (HOW) | pipeline-rules.mdc | §13.9 | Ladda INDEX först |
+| User Tiers (WHAT) | requirements.mdc | §R6 | Ladda INDEX först |
+| User Tiers (HOW) | core-rules.mdc | §2-4 | Ladda INDEX först |
+| Schema errors | core-rules.mdc | §1 | Ladda INDEX först |
+| RLS Policies | core-rules.mdc | §5 | Ladda INDEX först |
+| Edge Functions | core-rules.mdc | §0.5 | Ladda INDEX först |
+| Migrations | core-rules.mdc | §8-9 | Ladda INDEX först |
+
+---
+
+## 🔁 WORKFLOW - Hierarkisk Sökning
+
+```
+User stämmer fråga
+  ↓
+quick.mdc (denna fil) - Kritiska mönster
+  ↓
+Behöver mer info?
+  ↓
+Identifiera ämne:
+  - WHAT (requirements) → requirements.mdc
+  - HOW (implementation) → core-rules.mdc eller pipeline-rules.mdc
+  - WHY (historik) → advanced-rules.mdc
+  - ERROR → core-rules.mdc (STOP-WORDS)
+  ↓
+Ladda INDEX från rätt fil (@file [1, 50])
+  ↓
+Hitta rätt sektion i INDEX
+  ↓
+Ladda den sektionen (@file [section lines])
+  ↓
+Läs innehåll
+  ↓
+Ge svar baserat på innehåll
+```
+
+---
+
+## 🚨 KRITISKA PÅMINNELSER
+
+1. **ALDRIG säg "jag vet inte"** utan att först ha sökt i rätt fil
+2. **LADDA INDEX FÖRST** från rätt fil (använd @file [1, 50])
+3. **FÖLJ HIERARKIN:** quick.mdc → INDEX → sektion → svar
+4. **WHAT = requirements.mdc, HOW = core/pipeline-rules.mdc, WHY = advanced-rules.mdc**
+5. **ERROR codes → core-rules.mdc** (check STOP-WORDS i quick.mdc först)
+
+---
+
+**END OF quick.mdc**
+
+**Nästa steg vid alla frågor:**
+1. Kolla denna fil (quick.mdc) för snabba svar
+2. Om behöver mer → Identifiera WHAT/HOW/WHY/ERROR
+3. Ladda rätt fil INDEX
+4. Hitta sektion
+5. Ladda sektion
+6. Ge svar

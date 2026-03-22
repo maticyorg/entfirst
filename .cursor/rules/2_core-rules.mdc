@@ -1,0 +1,962 @@
+---
+description: "Core implementation patterns (HOW). Database schema, RLS security, Edge Functions, MCP workflow, migrations, type generation. Load when working with SQL, Supabase backend, or database implementation."
+alwaysApply: false
+---
+
+# AIKurerad Rules - Complete Documentation
+
+**⚠️ ATTENTION (Continue/Qwen Users):** This file is ~30K tokens - TOO LARGE to load entirely in 8K context.
+
+**USAGE PATTERN:**
+1. **quick.mdc** (always loaded) contains STOP-WORDS and critical patterns
+2. **When you hit STOP-WORD** → Use `@file .cursor/rules/rules.mdc [LINE_START, LINE_END]`
+3. **Load ONLY the section you need** (see INDEX below)
+
+**Example:**
+```
+Error 42P01 → quick.mdc says: "Load §1 Schema Reality Check"
+→ Execute: @file .cursor/rules/rules.mdc [108, 157]
+→ Read 50 lines, not all 2772!
+```
+
+---
+
+# Operativ instruktion till AI-agenten
+
+## 📑 INDEX - Hoppa till relevant sektion (LÄS ENDAST DET DU BEHÖVER)
+
+**INSTRUKTION:** Du har kommit hit från `quick.mdc` STOP-WORDS eller behöver detaljerad info. Använd detta index för att hitta rätt sektion. Läs ENDAST den relevanta sektionen - inte hela filen.
+
+| Vad du gör | Läs dessa sektioner | Radnummer |
+|---|---|---|
+| **Schema-fel** ("schema/table/column/function does not exist") | STOP-WORDS → §1 Schema Reality Check | 44-64, 108-157 |
+| **PostgREST errors** (406, PGRST106, 401, 403) | STOP-WORDS → §12 Troubleshooting PostgREST Errors | 44-64, 474-540 |
+| **RLS/Policies** (skapa/ändra policies, grants) | §0 Absoluta krav → §5 RLS-mönster → §5.5 Security Exceptions | 86-94, 806-914 |
+| **Edge Functions** (JWT forwarding, api_public queries, writes) | §0.5 Edge Functions mönster → §0.6 Write Patterns | 62-130 |
+| **Edge Function Timeouts** (504, batch processing fix) | BATCH_PROCESSING_FIX_SUMMARY.md + PRODUCTION_VERIFICATION_REPORT.md | Root directory |
+| **Trusted Channels AI Bug** (full_description vs description) | AI_FULL_DESCRIPTION_FIX.md + TRUSTED_CHANNELS_FINAL_STATUS.md | Root directory |
+| **Type Generation** (regenerera types.ts, api_public saknas) | §0.7 Type Generation | 131-196 |
+| **Edge Function Dependencies** (Deno versions, dependency pinning) | §0.75 Edge Function Dependencies | 199-267 |
+| **MCP Workflow** (production operations, service role key location) | §0.8 MCP Workflow | 270-373 |
+| **Frontend Stack** (Vite vs Next.js, edge middleware, bot protection) | §0.9 Frontend Stack & Edge Protection | 297-350 |
+| **Migrations** (skapa SQL-migreringar) | §0 Absoluta krav → §8 Migrations-header → §9 PR-checklista | 51-58, 416-447 |
+| **User state/tiers/kvoter** | §2 my_account_state → §3 Tiers → §4 Säkerhetshelpers | 154-214 |
+| **SECURITY DEFINER vs INVOKER** (beslut) | §5.5 Security Definer Exceptions | 806-914 |
+| **Sök/FTS** (full-text search) | §6 Sök & FTS | 339-405 |
+| **Anti-scraping** (public endpoints, limits, sitemap) | §7 Anti-scraping | 705-722 |
+| **Exponering** (api_public vs public, internal tables) | Database Exposure Standard (efter rad 575) | 575-670 |
+| **Do/Don't** (snabb referens) | §11 Do/Don't | 456-472 |
+| **Pipeline Requirements** (Fetch/Transform/Distribute data flow) | §13 YouTube Pipeline Requirements | 1607-2236 |
+| **Trusted Channels** (Swedish sports media, AI-granskning, timestamp-precision) | §13.9 Trusted Channels Requirements | 2237-2350 |
+
+**Alltid börja här om osäker:**
+1. §0 Absoluta krav (rad 51-58) - grundregler som ALLTID gäller
+2. STOP-WORDS (rad 44-49) - om du ser dessa felmeddelanden
+
+**Kommer från quick.mdc?** Du har redan läst STOP-WORDS där. Hoppa direkt till relevant sektion ovan.
+
+---
+
+## STOP-WORDS (finns dessa, STOPPA och läs regel 1):
+
+### HTTP Status Codes (Immediate Red Flags)
+- 🛑 **406 Not Acceptable** → PostgREST cannot access schema → §12 Troubleshooting PostgREST Errors
+- 🛑 **401 Unauthorized** → Missing/invalid authorization header → §0.5 Edge Functions JWT forwarding
+- 🛑 **403 Forbidden** → RLS policy rejection → §5 RLS-mönster
+
+### PostgREST Error Codes
+- 🛑 **PGRST106** → Schema not exposed to PostgREST → §12 Troubleshooting (Direct write to non-exposed schema)
+- 🛑 **PGRST301** → RLS policy violation → §5 RLS-mönster
+- 🛑 **proxy_status: PostgREST; error=PGRST***** → Always check §12 first
+
+### PostgreSQL Error Codes
+- ❌ **42P01** → relation does not exist → §1 Schema Reality Check
+- ❌ **42501** → insufficient privilege → §5 RLS-mönster + §5.5 Security Exceptions
+- ❌ **42883** → function does not exist → §1 Schema Reality Check
+- ❌ **23505** → unique violation (duplicate key) → Check upsert logic, onConflict handling
+
+### Text Error Messages
+- ❌ "schema does not exist" → §1 Schema Reality Check
+- ❌ "column does not exist" → §1 Schema Reality Check + Kontrollera tabellstruktur  
+- ❌ "permission denied" → §5 RLS-mönster + JWT/Schema-kvalificering
+- ❌ "function does not exist" → §1 Schema Reality Check
+- ❌ "table does not exist" → §1 Schema Reality Check
+
+## 0) Absoluta krav (icke-förhandlingsbara)
+
+* **ALLTID schema-kvalificera** samtliga tabeller, vyer, funktioner och policies i SQL, exempel: `api_public.video_segments_feed`, `public.youtube_videos_staging`, `public.keyword_library`, `auth.users`.
+* **ALLTID sätt search_path på funktioner** med `SET search_path = pg_temp, public` för att förhindra function hijacking och säkerställa stabil name resolution. Detta är kritiskt för säkerhet enligt Supabase Security Advisor (check 0011).
+* **Endast additiva ändringar i prod.** Inga `DROP/RENAME/ALTER ... DROP`. Inga `DROP POLICY`. Sanering = separat, godkänd PR.
+* **Skapa aldrig redundanta tabeller i `public`** för data som redan har källa i `auth` eller `api_private`. Bygg i stället **wrappers** (vy/RPC) i `api_public`.
+* **Rör aldrig auto-genererade typer** (t.ex. `src/integrations/supabase/types.ts`). Typer regenereras via Supabase-tooling – inte manuellt.
+* **Frontend läser alltid via `api_public`** (vyer/RPC med `SECURITY INVOKER` + RLS). Ingen direktläsning av `public`/`api_private`/`auth` från klient.
+* **Medlemskap, kvoter, behörighet** härleds via `api_public.my_account_state`. Allt "tiers/limits" ska i första hand använda den ytan.
+
+---
+
+## 0.5) Edge Functions och `api_public` (KRITISKT MÖNSTER)
+
+**Problem:** Edge Functions med `SERVICE_ROLE_KEY` har teknisk access till alla tabeller, men RLS-filtrering i `api_public`-vyer kräver att `auth.uid()` är satt. Utan JWT vidarebefordras inte användarens identitet till DB-kontexten → `auth.uid()` blir `NULL` → RLS-vyer returnerar tom data.
+
+**Lösning:** Vidarebefordra användarens JWT till Supabase-klienten via `global.headers.Authorization`.
+
+### Korrekt mönster (Edge Functions)
+```typescript
+// 1. Hämta och validera användarens JWT FÖRST
+const authHeader = req.headers.get('Authorization');
+if (!authHeader) throw new Error('Missing authorization');
+
+// 2. Skapa Supabase-klient med JWT vidarebefordrad
+const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+  global: { headers: { Authorization: authHeader } }
+});
+
+// 3. Använd .schema('api_public') för alla queries
+const { data: segments, error } = await supabase
+  .schema('api_public')
+  .from('video_segments_feed')
+  .select('*')
+  .eq('keyword', 'AIK');
+```
+
+### Varför detta krävs
+- **Utan JWT-vidarebefordran:** `auth.uid()` i DB-kontext är `NULL` → RLS-policys filtrerar bort all data → Edge Function får tom resultatmängd
+- **Med JWT-vidarebefordran:** `auth.uid()` returnerar korrekt user_id → RLS-policys tillåter läsning av användarens egna data → Edge Function får rätt data
+- **Schema-kvalificering:** Säkerställer att rätt RPC (`api_public.get_keyword_feed`) anropas istället för `public.get_keyword_feed`
+
+### Governance-principer
+- **Moderation/kvoter:** Implementeras i SECURITY DEFINER RPC i `api_public`, INTE i Edge Function-kod
+- **Loggning:** Använd strukturerad loggning (`console.log('step', { details })`) för observabilitet
+- **Pipeline-specifika patterns:** Se §13 YouTube Pipeline Requirements för fetch/transform/distribute data flow
+
+### Vanliga fel att undvika
+❌ `const supabase = createClient(URL, SERVICE_ROLE_KEY);` // JWT vidarebefordras EJ  
+❌ `await supabase.rpc('get_keyword_feed', {...})` // Schema saknas, går mot public  
+❌ `await supabase.from('video_segments').select()` // Läser från public istället för api_public  
+✅ `const supabase = createClient(URL, SERVICE_ROLE_KEY, { global: { headers: { Authorization: authHeader }}});`  
+✅ `await supabase.schema('api_public').rpc('get_keyword_feed', {...})`  
+✅ `await supabase.schema('api_public').from('video_segments_feed').select()`
+
+---
+
+## 0.7) Type Generation (KRITISKT - api_public måste inkluderas)
+
+### Problem
+
+Supabase CLI `gen types` kommandot genererar **endast `public` schema som standard**. Detta gör att `api_public` schema (som innehåller alla vyer och RPC-funktioner som frontend och edge functions använder) saknas i genererade typfiler.
+
+### Symptom
+
+- TypeScript-fel: `'api_public' is not assignable to type 'never'`
+- Saknade typer för `video_segments_feed`, `my_account_state` vyer
+- Saknade typer för RPC-funktioner som `get_keyword_feed`, `search_segments`
+- Typer "försvinner" efter regenerering
+
+### Lösning: Använd npm scripts
+
+**ALLTID använd npm scripts som explicit inkluderar båda scheman:**
+
+```bash
+# Regenerera frontend-typer
+npm run types:frontend
+
+# Regenerera edge function-typer
+npm run types:edge
+
+# Regenerera båda
+npm run types:all
+```
+
+### Manuell regenerering (om nödvändigt)
+
+Om du måste regenerera typer manuellt, **inkludera alltid båda scheman**:
+
+```bash
+# Frontend-typer
+npx supabase gen types typescript \
+  --project-id niacajcdefleobqtyrmi \
+  --schema public \
+  --schema api_public \
+  > src/integrations/supabase/types.ts
+
+# Edge function-typer
+npx supabase gen types typescript \
+  --project-id niacajcdefleobqtyrmi \
+  --schema public \
+  --schema api_public \
+  > supabase/functions/_shared/database.types.ts
+```
+
+### När ska typer regenereras?
+
+Regenerera typer efter:
+- Skapa eller ändra databasmigreringar
+- Lägga till/ändra vyer i `api_public` schema
+- Lägga till/ändra RPC-funktioner i `api_public` schema
+- Schemastrukturändringar i `public` schema
+
+### Vanliga fel att undvika
+
+❌ `npx supabase gen types typescript --project-id X > types.ts` // Saknar --schema flaggor, genererar endast public  
+❌ Manuell redigering av `types.ts` eller `database.types.ts` // Bryter mot §0 Absoluta krav  
+❌ Kopiera typer från frontend till edge functions // Olika format (Vite vs Deno)  
+✅ `npm run types:all` // Korrekt, inkluderar båda scheman  
+✅ Se `docs/TYPE_GENERATION.md` för fullständig guide
+
+---
+
+## §0.65 Language Detection (OpenRouter LLM) <a id="language-detection"></a>
+
+### Overview
+
+Language detection används för att filtrera bort icke-europeiska språk (Urdu, Hindi, Indonesian, Russian, etc.) från YouTube-pipeline INNAN videos sparas i staging.
+
+**Implementation:** `supabase/functions/_shared/languageFilter.ts`
+
+**Updated:** 2026-02-01 - Migrated from Google Cloud API to OpenRouter LLM
+
+### API Configuration
+
+**Secret Name:** `OPEN_ROUTER_API` (NOT `GOOGLE_LANGUAGE_DETECT_KEY`)
+
+**Why OpenRouter?**
+- Better accuracy on romanized Urdu/Hindi/Indonesian text (90%+ vs 60-70% with Google)
+- 99.5% cost reduction: $0.01-0.10/1M tokens vs Google's $20/1M chars
+- 99.9% uptime with auto-fallback across multiple providers
+- Same API key used across RSS pipeline (unified configuration)
+
+**Cost:** $0.01-0.10/1M tokens (~$0.05/1M chars equivalent)
+
+**Accuracy:** 90%+ on romanized text (critical for spam filtering)
+
+### Usage Pattern
+
+```typescript
+import { shouldIncludeByLanguage } from '../_shared/languageFilter.ts';
+
+// In fetch stage (before saving to staging)
+const combinedText = `${video.title} ${video.fullDescription || video.description}`;
+const languageCheck = await shouldIncludeByLanguage(
+  video.defaultLanguage || null, // YouTube metadata hint
+  combinedText
+);
+
+if (!languageCheck.include) {
+  console.log(`[LANGUAGE FILTER] Rejected: ${video.videoId} - ${languageCheck.reason}`);
+  continue; // Skip video
+}
+```
+
+### How It Works
+
+1. **Keyword Pre-Check:** Fast regex patterns catch obvious spam (Urdu/Hindi/Indonesian keywords, non-Latin scripts)
+2. **OpenRouter LLM Call:** `openrouter/auto` model answers "Is this European language? yes or no"
+   - Prompt: `"Is this European language? Answer only: yes or no\n\n[first 200 chars of text]"`
+   - Max tokens: 3 (efficient)
+   - Temperature: 0 (deterministic)
+3. **Response Parsing:** "yes" → European (accept), "no" → Non-European (reject)
+4. **Backup Filters:** If OpenRouter fails, fallback to keyword patterns (Russian Cyrillic, Urdu/Hindi romanized, Indonesian)
+
+### Allowed Languages
+
+```typescript
+ALLOWED_EUROPEAN_LANGUAGES = [
+  'sv', 'en', 'no', 'da', 'fi', 'de', 'fr', 'es', 'it', 
+  'nl', 'pl', 'pt', 'is', 'et', 'lv', 'lt', 'cs', 'sk', 
+  'hu', 'ro', 'bg', 'hr', 'sl', 'sr', 'el'
+]
+```
+
+### Blocked Languages
+
+```typescript
+BLOCKED_LANGUAGES = [
+  'ur', 'hi', 'ar', 'bn', 'pa', 'fa', 'tr', 'ta', 'te', 
+  'mr', 'gu', 'kn', 'ml', 'id', 'ms', 'ru'
+]
+```
+
+### Bypass Rules
+
+**Trusted channels skip language filter:**
+- `discoveryMethod === 'deep_fetch'` (from `youtube_channel_config`)
+- Explicit `channelId` requests (manual fetches)
+- Whitelisted channel names: `TRUSTED_CHANNELS` array
+
+### Error Handling (Fail-Safe)
+
+```typescript
+try {
+  const languageCheck = await shouldIncludeByLanguage(...);
+  // Process result
+} catch (error) {
+  // FAIL-CLOSED: Reject on error (security first)
+  // Better to miss 1 valid video than save 100 spam videos
+  console.error('[FILTER ERROR] Rejecting due to error:', error);
+  continue; // Skip video
+}
+```
+
+### Edge Functions Using Language Detection
+
+1. `fetch-youtube-videos` - Primary spam entry point
+2. `fetch-youtube-deep-fetch` - Deep-fetch channels
+3. `transform-videos` - Secondary filter (belt-and-suspenders)
+4. `fetch-rss-articles` - RSS article filtering
+5. `fetch-rss-news` - RSS news filtering
+
+### Monitoring
+
+**Check logs for:**
+- ✅ `[LANGUAGE FILTER] OpenRouter: European (95% confidence)` → Working!
+- ✅ `[LANGUAGE FILTER] OpenRouter: Non-European (95% confidence)` → Blocking spam!
+- ✅ `[LANGUAGE FILTER] Rejected by pre-check: Urdu/Hindi keywords detected` → Keyword filter working!
+- ❌ `[LANGUAGE FILTER] No OPEN_ROUTER_API found` → API key missing!
+- ⚠️ `[LANGUAGE FILTER] OpenRouter API error, falling back to keyword filters` → API error, fallback active
+
+### Troubleshooting
+
+**Problem:** Spam videos passing through
+**Check:**
+1. Verify `OPEN_ROUTER_API` is set in Edge Function secrets
+2. Check Edge Function logs for detection results
+3. Verify deployed version includes latest `languageFilter.ts`
+4. Check if spam bypasses keyword pre-check (may need new patterns)
+
+**Problem:** Valid videos rejected
+**Check:**
+1. Is channel in `TRUSTED_CHANNELS` or `youtube_channel_config.deep_fetch=true`?
+2. Check language detection logs for false positives
+3. Add channel to whitelist if consistently rejected
+
+---
+
+## §0.75 Edge Function Dependencies - Version Pinning Strategy <a id="edge-dependencies"></a>
+
+### Deno Runtime
+**Supabase Edge Functions** run on Deno 1.x (managed by Supabase, auto-updated within minor versions).
+- Runtime is managed by Supabase platform
+- No explicit version pinning needed for runtime itself
+- Compatible with Deno std 0.168.0+
+
+### Dependency Versions (Current as of 2026-01-09)
+
+#### Core Dependencies
+| Package | Version | Used In | Notes |
+|---------|---------|---------|-------|
+| `deno.land/std` | `@0.168.0` | Most Edge Functions | HTTP server, testing |
+| `deno.land/std` | `@0.224.0` | fetch-rss-articles | Crypto module |
+| `esm.sh/@supabase/supabase-js` | `@2.53.0` | All Edge Functions | Supabase client |
+| `deno.land/x/deno_dom` | `@v0.1.56` | fetch-rss-articles | HTML parsing (WASM) |
+| `esm.sh/fast-xml-parser` | `@4.5.0` | fetch-rss-articles | RSS/XML parsing |
+
+#### Shared Modules (Internal)
+Located in `supabase/functions/_shared/`:
+- `database.types.ts` - Auto-generated DB types
+- `languageFilter.ts` - OpenRouter LLM language detection (updated 2026-02-01)
+- `negativeFilters.ts` - Content filtering
+- `sportDetection.ts` - Sport category detection
+- `authGuard.ts` - Service role validation
+- `errorHandling.ts` - Error wrapping utilities
+- `aiSegmentExtraction.ts` - OpenAI integration
+- `captionDownload.ts` - YouTube caption download
+
+### Version Pinning Rules
+
+**ALWAYS pin external dependencies to specific versions:**
+```typescript
+// ✅ CORRECT: Pinned versions (deterministic builds)
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { DOMParser } from "https://deno.land/x/deno_dom@v0.1.56/deno-dom-wasm.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.53.0";
+
+// ❌ WRONG: Unpinned versions (non-deterministic, breaking changes risk)
+import { serve } from "https://deno.land/std/http/server.ts";
+import { DOMParser } from "https://deno.land/x/deno_dom/deno-dom-wasm.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js";
+```
+
+### Why Version Pinning Matters
+1. **Deterministic Builds**: Same code produces same result across deployments
+2. **Breaking Changes Protection**: New versions can introduce API changes
+3. **Debugging**: Known versions make issues reproducible
+4. **Production Stability**: Unexpected updates won't break live services
+
+### Version Upgrade Process
+1. **Test in isolation**: Deploy to test function first
+2. **Check breaking changes**: Review changelog/release notes
+3. **Update incrementally**: One dependency at a time
+4. **Document change**: Git commit message + rules.mdc update
+5. **Monitor production**: Watch logs after deployment
+
+### Known Version Inconsistencies (TODO)
+⚠️ **Deno std version mismatch**: Some functions use `@0.168.0`, others use `@0.224.0`
+- Impact: Minimal (both stable)
+- Recommendation: Standardize to `@0.224.0` in future refactor
+- Reason for inconsistency: Incremental additions over time
+
+### Dependency Audit (Last: 2026-01-09)
+- ✅ `deno_dom@v0.1.56` - Latest stable (upgraded from unpinned)
+- ✅ `supabase-js@2.53.0` - Pinned consistently
+- ✅ `fast-xml-parser@4.5.0` - Pinned consistently
+- ⚠️ `std@0.168.0 vs @0.224.0` - Mixed versions (non-critical)
+
+---
+
+## §0.8 MCP Workflow - Production Operations <a id="mcp-workflow"></a>
+
+### Context
+This project has ONE Supabase instance: **production** at `https://niacajcdefleobqtyrmi.supabase.co`.
+There is NO local Supabase running. All operations use MCP tools to interact with production.
+
+### Critical Rules
+
+#### ✅ ALWAYS Use MCP for Production
+```typescript
+// Database queries
+mcp_supabase_AIK_execute_sql({ query: "SELECT ..." });
+
+// Deploy Edge Functions
+mcp_supabase_AIK_deploy_edge_function({
+  name: "transform-videos",
+  files: [...]
+});
+
+// List tables
+mcp_supabase_AIK_list_tables({ schemas: ["public"] });
+
+// Get credentials
+mcp_supabase_AIK_get_project_url();  // Returns: https://niacajcdefleobqtyrmi.supabase.co
+mcp_supabase_AIK_get_anon_key();     // Returns: anon key
+```
+
+#### ❌ NEVER Use Local CLI for Production
+```bash
+# ❌ WRONG: These require local Docker (not running)
+npx supabase status
+npx supabase db reset
+npx supabase link
+supabase start
+
+# ✅ CORRECT: Use MCP tools instead
+mcp_supabase_AIK_execute_sql(...)
+mcp_supabase_AIK_list_tables(...)
+```
+
+### Service Role Key - Where to Find It
+
+**Option 1: Ask user directly**
+"What's your Supabase service role key?" (fastest)
+
+**Option 2: Supabase Dashboard**
+1. Go to Supabase Dashboard
+2. Project Settings → API
+3. Copy `service_role` key (secret, long JWT)
+
+**Option 3: Environment (Edge Functions)**
+```typescript
+const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+```
+
+**Option 4: Local `.env` file** (if exists)
+```
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+**DO NOT:**
+- Try to get it from `npx supabase status` (requires local Docker)
+- Assume it's in git (it's secret, never committed)
+
+### When to Use What
+
+| Task | Tool | Example |
+|------|------|---------|
+| Query production DB | MCP: `execute_sql` | Check segment count |
+| Deploy Edge Function | MCP: `deploy_edge_function` | Update transform-videos |
+| Run migration | MCP: `apply_migration` | Add new table |
+| Backfill pipeline | HTTP + service key | Trigger `process-youtube-pipeline` |
+| Test locally | Local CLI (`npx supabase`) | Develop new features |
+
+### Backfill Pattern (Special Case)
+
+For triggering Edge Functions (like backfill), use HTTP request with service role key:
+
+```powershell
+$serviceKey = "..." # From user or dashboard
+Invoke-WebRequest `
+  -Uri "https://niacajcdefleobqtyrmi.supabase.co/functions/v1/process-youtube-pipeline" `
+  -Method POST `
+  -Headers @{
+    "Authorization" = "Bearer $serviceKey"
+    "Content-Type" = "application/json"
+  } `
+  -Body '{"keyword":"AIK","publishedAfter":"2025-09-01T00:00:00Z"}'
+```
+
+### Red Flags - Stop Immediately If You See
+
+- ❌ "failed to inspect container health" → You tried local Docker (wrong)
+- ❌ "Docker is not running" → You tried local CLI (wrong)
+- ❌ "supabase_db_niacajcdefleobqtyrmi" container → Local dev (wrong)
+
+**Correct response:** "I need your Supabase service role key to continue."
+
+---
+
+## 0.9) Frontend Stack & Edge Protection (KRITISKT - LÄRDOMEN FRÅN MIDDLEWARE-FELET)
+
+### THE FUNDAMENTAL RULE
+
+**This is a Vite + React SPA (Single Page Application), NOT Next.js.**
+
+This means:
+- ❌ **NO server-side middleware support** (Vite builds pure client-side apps)
+- ❌ **NO `middleware.ts` with Next.js syntax** (`NextRequest`/`NextResponse` does not exist)
+- ❌ **NO server-side rendering (SSR)** by default (client-only rendering)
+- ✅ **Edge protection MUST use alternative approaches** (Vercel config, Cloudflare, or backend-only)
+
+### Tech Stack Reality Check
+
+```json
+// package.json (THE SOURCE OF TRUTH)
+{
+  "name": "vite_react_shadcn_ts",  // ← VITE, not Next.js!
+  "scripts": {
+    "dev": "vite",                  // ← Uses Vite dev server
+    "build": "vite build"           // ← Builds client-side bundle
+  }
+}
+```
+
+**What this means:**
+- Frontend is **100% client-side** (runs in browser, not on server)
+- No server-side code execution (no middleware, no API routes, no SSR)
+- All data fetching happens via Supabase client (PostgREST API)
+
+### Common Mistake: Trying to Add Next.js Middleware
+
+```typescript
+// ❌ WRONG: This will NOT work in Vite
+import { NextRequest, NextResponse } from 'next/server';
+
+export function middleware(request: NextRequest) {
+  // This code will never run - Vite has no middleware support!
+  return NextResponse.next();
+}
+```
+
+**Error you'll get:**
+- `Cannot find module 'next/server'` (Next.js is not installed)
+- File is ignored during Vite build (no middleware concept exists)
+
+### Correct Patterns for Edge Protection in Vite
+
+#### Pattern 1: Vercel Config (Security Headers Only)
+
+```json
+// vercel.json
+{
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "X-XSS-Protection", "value": "1; mode=block" }
+      ]
+    }
+  ]
+}
+```
+
+**Pros:**
+- ✅ Works with Vite (Vercel handles at CDN level)
+- ✅ No code changes needed
+- ✅ Basic security headers
+
+**Cons:**
+- ⚠️ No bot detection (just headers)
+- ⚠️ No rate limiting (unless Vercel Pro)
+- ⚠️ No custom logic
+
+#### Pattern 2: Cloudflare (Bot Detection + Rate Limiting)
+
+**Setup:** Point domain to Cloudflare → Enable bot detection
+
+**Pros:**
+- ✅ Works with any SPA (including Vite)
+- ✅ Free tier includes bot detection
+- ✅ DDoS protection included
+- ✅ Rate limiting available
+
+**Cons:**
+- ⚠️ Requires DNS change
+- ⚠️ Learning curve for Cloudflare dashboard
+
+#### Pattern 3: Backend-Only Protection (Current Implementation)
+
+**Rely on existing strong backend security:**
+- ✅ Hard limits: 50-100 items/request (server-side in RPC functions)
+- ✅ RLS on all tables
+- ✅ `api_public` schema isolation
+- ✅ Hashed IDs (`segment_hash`)
+- ✅ SECURITY INVOKER/DEFINER patterns
+
+**Pros:**
+- ✅ Already implemented and working
+- ✅ No additional infrastructure needed
+- ✅ Sufficient for initial launch
+
+**Cons:**
+- ⚠️ No edge-level bot detection
+- ⚠️ Bots reach backend (but are rate-limited there)
+
+#### Pattern 4: Client-Side Honeypots (Telemetry)
+
+```tsx
+// src/components/Layout.tsx
+<a 
+  href="/api/do-not-follow" 
+  style={{ position: 'absolute', left: '-9999px' }}
+  aria-hidden="true"
+  tabIndex={-1}
+>
+  Admin Panel
+</a>
+```
+
+**Pros:**
+- ✅ Works in Vite (pure HTML)
+- ✅ Helps identify bots (they follow hidden links)
+- ✅ Can log to analytics
+
+**Cons:**
+- ⚠️ Detection only (no blocking)
+- ⚠️ Requires backend logic to act on flagged IPs
+
+#### Pattern 5: Vercel Rewrites (Sitemap & Share Proxy)
+
+**Sitemap:** `/sitemap.xml` is rewritten to the Supabase Edge Function `sitemap` so crawlers get a dynamic XML (news, chronicles, static pages). Static `public/sitemap.xml` is not used in production.
+
+```json
+// vercel.json rewrites
+{
+  "rewrites": [
+    { "source": "/sitemap.xml", "destination": "https://niacajcdefleobqtyrmi.supabase.co/functions/v1/sitemap" },
+    { "source": "/share/chronicle/:slug", "destination": "https://niacajcdefleobqtyrmi.supabase.co/functions/v1/share-proxy?type=chronicle&id=:slug" },
+    { "source": "/share/news/:id", "destination": "https://niacajcdefleobqtyrmi.supabase.co/functions/v1/share-proxy?type=news&id=:id" }
+  ]
+}
+```
+
+**robots.txt:** Served from `public/robots.txt`; MUST include `Sitemap: https://aikurerad.se/sitemap.xml`. Allow `User-agent: *` and `Allow: /` for crawlers.
+
+**Requirements:** See requirements.mdc §R10 (SEO & Discovery).
+
+### Migration Path: Vite → Next.js (If Needed)
+
+**When to consider migration:**
+- Need server-side rendering (SSR) for SEO
+- Need API routes (backend endpoints)
+- Need middleware (edge-level bot detection)
+- Want built-in optimizations (image optimization, etc.)
+
+**Migration complexity:** High (2-3 days)
+- Routing changes (file-based → App Router)
+- Build config changes (vite.config.ts → next.config.js)
+- Component updates (client vs server components)
+
+**Recommendation:** Stay on Vite unless SSR/middleware becomes critical business need.
+
+### Do/Don't Summary
+
+❌ **NEVER:**
+- Create `middleware.ts` with Next.js syntax in Vite project
+- Import from `'next/server'` or `'next/*'`
+- Assume server-side code execution exists
+- Copy middleware examples from Next.js docs
+
+✅ **ALWAYS:**
+- Check `package.json` to verify stack (Vite vs Next.js)
+- Use Vercel config for headers (if on Vercel)
+- Consider Cloudflare for bot detection (if critical)
+- Rely on backend security as primary defense
+
+### Security Model Summary
+
+**Current Stack (Vite + Supabase):**
+```
+Browser → Vercel CDN → Static HTML/JS/CSS
+                ↓
+        Supabase PostgREST API
+                ↓
+        RLS + Limits + Schema Isolation
+```
+
+**If Migrated to Next.js:**
+```
+Browser → Vercel Edge → Next.js Middleware (bot detection)
+                           ↓
+                     Next.js SSR/API Routes
+                           ↓
+                  Supabase PostgREST API
+                           ↓
+              RLS + Limits + Schema Isolation
+```
+
+---
+
+## §7 Anti-scraping & Public Endpoints
+
+**General rule:** Public-facing endpoints (anon access) MUST enforce server-side limits and caching to avoid abuse and excessive DB load.
+
+**RPC/views:** Hard limits 50–100 items/request in api_public RPCs; no unbounded selects. See §0.9 Pattern 3.
+
+**Sitemap Edge Function (`sitemap`):**
+- **Allowed as public:** `verify_jwt = false` (crawlers send no JWT).
+- **MUST:** Use anon key (or service key only if anon unavailable); query only `api_public` views (`aik_news_feed_v`, `chronicles_feed`).
+- **MUST:** Enforce `.limit(1000)` per query; cap total URLs per sitemap (e.g. 1000 news + 1000 chronicles).
+- **MUST:** Set `Cache-Control: public, max-age=3600` (1 hour) to reduce repeated DB hits from crawlers.
+- **MUST NOT:** Expose internal tables or raw IDs.
+
+**Share-proxy Edge Function:** Public for bot user-agents; uses anon key and allowlisted origins only. Cache 60s. See requirements.mdc §R10.3.
+
+---
+
+## 0.6) Edge Function Write Patterns (KRITISKT - LÄRDOMEN FRÅN 406-FELET)
+
+### THE FUNDAMENTAL RULE
+
+**PostgREST can ONLY access the `api_public` schema.**
+
+This means:
+- ✅ Edge Functions MUST access data via `api_public` (schema exposed to PostgREST)
+- ✅ Internal `public.*` access (READ/WRITE) is done via `api_public` RPC (typically `SECURITY DEFINER`, usually service_role-only)
+- ❌ Edge Functions MUST NOT assume `.schema('public').from('...')` works (it goes via PostgREST, which is restricted to `api_public`)
+
+### System-only Edge Functions (Cron / Service Role)
+
+If an Edge Function triggers ingestion, publishing, or any AI-costly work, it MUST be protected as **system-only**:
+
+- ✅ Require `Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>` and call `assertServiceRole(req)` (see `supabase/functions/_shared/authGuard.ts`)
+- ✅ You MAY deploy with `verify_jwt=false` **only if** you enforce service-role auth in the function body
+
+### Pattern 1: Reading Internal Tables (Use SECURITY DEFINER RPC)
+
+```typescript
+// ✅ CORRECT: Use a SECURITY DEFINER RPC in api_public (service_role-only)
+const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+
+const { data: stagingVideos, error } = await supabase
+  .schema('api_public')
+  .rpc('get_pending_staging_videos', { p_limit: 10 });
+```
+
+**Why this works:** PostgREST can access `api_public`, and the RPC runs with elevated privileges (`SECURITY DEFINER`) to read from `public.*`.
+
+### Pattern 2: Writing to Internal Tables (MUST Use RPC)
+
+```typescript
+// ❌ WRONG: Trying to write directly to internal table
+const { data, error } = await supabase
+  .schema('public')
+  .from('youtube_videos_staging')
+  .upsert(videoRecords, { onConflict: 'youtube_video_id' });
+
+// Result: 406 Not Acceptable
+// Error: proxy_status: PostgREST; error=PGRST106
+// Reason: PostgREST cannot access 'public' schema - only 'api_public'
+```
+
+```typescript
+// ✅ CORRECT: Use SECURITY DEFINER RPC function in api_public
+const { data, error } = await supabase
+  .schema('api_public')
+  .rpc('save_staging_video', {
+    p_youtube_video_id: video.videoId,
+    p_youtube_channel_id: video.channelId,
+    p_title: video.title,
+    p_description: video.description,
+    // ... all other parameters
+  });
+
+// This works because:
+// 1. PostgREST CAN access api_public schema
+// 2. RPC function has SECURITY DEFINER
+// 3. Function has SET search_path TO 'public', 'pg_temp'
+// 4. Function executes with elevated privileges to write to public.youtube_videos_staging
+```
+
+### Canonical Example: save_operational_video()
+
+See `supabase/migrations/20250119000000_api_public_pipeline_rpc_functions.sql` (lines 96-185):
+
+```sql
+CREATE OR REPLACE FUNCTION api_public.save_operational_video(
+  p_staging_id uuid,
+  p_youtube_video_id text,
+  -- ... all other parameters
+)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER                          -- Elevated privileges
+SET search_path TO 'public', 'pg_temp'   -- Access public schema
+AS $$
+BEGIN
+  INSERT INTO public.youtube_videos_operational (...)
+  VALUES (...)
+  ON CONFLICT (youtube_video_id) DO UPDATE SET ...;
+  
+  RETURN v_id;
+END;
+$$;
+
+-- Critical grants
+REVOKE ALL ON FUNCTION api_public.save_operational_video(...) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION api_public.save_operational_video(...) TO service_role;
+```
+
+### Decision Tree: Read or Write?
+
+```
+Need to access internal table from Edge Function?
+│
+├─ READ?
+│  └─ Use api_public view/RPC (usually SECURITY DEFINER, service_role-only)
+│
+└─ WRITE (insert/update/upsert/delete)?
+   └─ Create/use api_public RPC function with SECURITY DEFINER
+      Example: supabase.schema('api_public').rpc('save_staging_video', {...})
+```
+
+### Why This Architecture?
+
+1. **Security:** PostgREST is intentionally restricted to `api_public` schema only
+2. **Grants:** `REVOKE USAGE ON SCHEMA public FROM anon, authenticated, service_role;`
+3. **Isolation:** Internal tables (`public.*`) never exposed directly to API layer
+4. **Audit:** All writes go through controlled RPC functions with explicit grants
+5. **Validation:** RPC functions can validate, transform, and log writes
+
+### If You See 406/PGRST106
+
+**STOP. You are trying to write to a non-exposed schema.**
+
+1. Check: Are you calling `.from('table').insert/update/upsert/delete()` on `public` schema?
+2. Solution: Create `api_public` RPC function with `SECURITY DEFINER`
+3. Pattern: Copy `save_operational_video()` as template
+4. Test: Verify function is callable with `SERVICE_ROLE_KEY`
+
+---
+
+## §5.5 Security Definer Exceptions - Legitimate Patterns
+
+### When SECURITY DEFINER is Required
+
+**SECURITY DEFINER views and functions are LEGITIMATE when:**
+
+1. **Reading from schemas anon/authenticated cannot access**
+   - Example: `api_public.my_account_state` reads `auth.users`
+   - Reason: `anon` has no USAGE on `auth` schema
+   - Safety: View filters with `WHERE id = auth.uid()`
+
+2. **Reading from public.* tables for anon users**
+   - Example: `api_public.aik_current_standings` reads `public.football_standings`
+   - Reason: `anon` has no USAGE on `public` schema (by design)
+   - Safety: Views apply own filters (`WHERE team_name = 'AIK'`)
+
+3. **Writing to internal tables from Edge Functions**
+   - Example: `api_public.save_staging_video()` writes to `public.youtube_videos_staging`
+   - Reason: PostgREST can only access `api_public` schema
+   - Safety: RPC has `REVOKE EXECUTE FROM PUBLIC; GRANT EXECUTE TO service_role;`
+
+### SECURITY DEFINER Views - Why Supabase Flags Them
+
+**Supabase Security Advisor flags SECURITY DEFINER views because:**
+- In most cases, views SHOULD be SECURITY INVOKER for RLS to work
+- SECURITY DEFINER views run as owner (postgres), bypassing RLS
+- This can expose data users shouldn't see
+
+**In this project, SECURITY DEFINER views are INTENTIONAL because:**
+- Views read from `public.*` tables that `anon` cannot access directly
+- Views apply their own filters (no RLS needed on underlying tables)
+- Data is public (no user-specific filtering required)
+
+### Pattern: SECURITY DEFINER View Reading Public Data
+
+```sql
+-- Legitimate pattern: View reads public data from schema anon cannot access
+CREATE VIEW api_public.aik_current_standings AS
+SELECT 
+  position, points, goal_difference
+FROM public.football_standings
+WHERE team_name = 'AIK' AND is_current = true;
+
+GRANT SELECT ON api_public.aik_current_standings TO anon, authenticated;
+
+-- Why this is safe:
+-- 1. anon has no USAGE on public schema (cannot read public.* directly)
+-- 2. View filters data (WHERE team_name = 'AIK')
+-- 3. Data is public (no user-specific filtering needed)
+-- 4. View MUST be SECURITY DEFINER to read public.* as owner
+```
+
+### Pattern: SECURITY DEFINER Function with Tight Grants
+
+```sql
+CREATE FUNCTION api_public.save_staging_video(...)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_temp, public  -- CRITICAL: Always set search_path
+AS $$
+BEGIN
+  INSERT INTO public.youtube_videos_staging (...) VALUES (...);
+  RETURN id;
+END;
+$$;
+
+-- Tight security grants
+REVOKE ALL ON FUNCTION api_public.save_staging_video(...) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION api_public.save_staging_video(...) TO service_role;
+
+-- Why this is safe:
+-- 1. Only service_role can execute (not anon/authenticated)
+-- 2. search_path is locked (prevents hijacking)
+-- 3. Function validates inputs
+-- 4. Writes to internal table (not exposed via api_public)
+```
+
+### Checklist: Is SECURITY DEFINER Safe?
+
+- [ ] Function/view reads from schema user cannot access (auth.*, public.*)
+- [ ] Function/view applies own filters (WHERE clauses)
+- [ ] Function has `SET search_path = pg_temp, public`
+- [ ] Function has tight EXECUTE grants (REVOKE FROM PUBLIC)
+- [ ] Data is public OR filtered by auth.uid()
+- [ ] No way to enumerate other users' data
+
+### When to Use SECURITY INVOKER Instead
+
+**Use SECURITY INVOKER when:**
+- View reads from tables WITH RLS policies
+- You want RLS to apply based on querying user
+- User has direct access to underlying schema
+
+**Example:**
+```sql
+CREATE VIEW api_public.my_segments
+WITH (security_invoker = true)
+AS SELECT * FROM api_public.video_segments_feed;
+-- RLS on video_segments_feed applies to querying user
+```
+
+### Summary: SECURITY DEFINER is OK When
+
+1. Reading from schemas anon cannot access (`auth.*`, `public.*`)
+2. Views apply own filters (no RLS on underlying tables)
+3. Functions have `SET search_path` and tight grants
+4. Data is public or filtered by `auth.uid()`
+
+---
+
+## 1) Tvingande "Schema Reality Check" före varje ändringsförslag

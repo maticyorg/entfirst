@@ -1,0 +1,600 @@
+---
+description: "Functional requirements (WHAT system must do). Pipeline flow, trusted channels, content filtering, user tiers, AI processing rules. Load when understanding business logic, features, or system requirements."
+alwaysApply: false
+---
+
+# AIKurerad - Functional Requirements (File 3/5)
+
+**File Size:** ~20KB (safe for Cursor patterns match)  
+**Purpose:** WHAT the system must do - functional requirements  
+**Mode:** Patterns Match (auto-loaded for feature/business logic work)
+
+**Part of 5-file split:**
+1. `quick.mdc` - Always loaded, STOP-WORDS, Section Map
+2. `core-rules.mdc` - Core implementation patterns (HOW)
+3. **`requirements.mdc`** ← YOU ARE HERE (WHAT system must do)
+4. `pipeline-rules.mdc` - Pipeline implementation details (HOW pipeline works)
+5. `advanced-rules.mdc` - Advanced patterns, edge cases (WHY)
+
+**When to update:** When deployment changes **WHAT** the system does (new features, changed business logic)
+
+---
+
+## 📑 INDEX - Requirements Sections (Hierarkisk Navigation)
+
+**INSTRUKTION:** Ladda INDEX först, hitta rätt sektion, ladda ENDAST den sektionen.
+
+**Ladda detta INDEX:** `@file .cursor/rules/requirements.mdc [1, 50]`
+
+| Requirement Area | Section | Lines | Command |
+|------------------|---------|-------|---------|
+| **Pipeline Flow** | §R1 | 50-250 | `@file requirements.mdc [50, 250]` |
+| **Trusted Channels** | §R2 | 251-350 | `@file requirements.mdc [251, 350]` |
+| **Content Filtering** | §R3 | 351-450 | `@file requirements.mdc [351, 450]` |
+| **Language Detection** | §R4 | 451-520 | `@file requirements.mdc [451, 520]` |
+| **Sport Detection** | §R5 | 521-600 | `@file requirements.mdc [521, 600]` |
+| **User Tiers** | §R6 | 601-750 | `@file requirements.mdc [601, 750]` |
+| **AI Processing** | §R7 | 751-900 | `@file requirements.mdc [751, 900]` |
+| **Data Exposure** | §R8 | 901-1050 | `@file requirements.mdc [901, 1050]` |
+| **Update Guidelines** | §R9 | 1051-1150 | `@file requirements.mdc [1051, 1150]` |
+| **SEO & Discovery** | §R10 | 543-591 | `@file requirements.mdc [543, 591]` |
+
+**Usage Pattern:**
+```
+1. User asks: "Vilka är pipeline requirements?"
+2. Agent loads INDEX: @file requirements.mdc [1, 50]
+3. Agent finds: §R1 Pipeline Flow = lines 50-250
+4. Agent loads: @file requirements.mdc [50, 250]
+5. Agent reads §R1 and answers
+```
+
+---
+
+## §R1 YouTube Pipeline Requirements
+
+### Functional Flow
+
+**MUST implement:** Fetch → Transform → Distribute
+
+```
+Fetch Phase (fetch-youtube-videos)
+  ↓
+Transform Phase (transform-videos)
+  ↓
+Distribute Phase (distribute-segments)
+```
+
+### R1.1 Fetch Phase Requirements
+
+**⚠️ CRITICAL UPDATE 2026-01-27:** Fetch phase has TWO independent functions:
+- **fetch1** (`fetch-youtube-videos`) - Keyword search across all YouTube
+- **fetch2** (`fetch-youtube-deep-fetch`) - Deep-fetch from 15 trusted channels
+
+**See:** `.cursor/rules/FETCH2_INTEGRATION_CRITICAL_2026-01-27.md` for complete architecture.
+
+**Edge Function:** `fetch-youtube-videos` (fetch1)
+
+**MUST:**
+- Collect videos from specified keywords (from `keyword_library` table)
+- Respect YouTube API quota (10,000 units/day)
+- Handle rate limiting (429 errors) with exponential backoff
+- Store raw data in `public.youtube_videos_staging`
+- Extract video metadata: title, description, channel_id, published_at
+- Store YouTube video_id as unique identifier
+- Process videos in batches (50 videos per keyword)
+
+**MUST NOT:**
+- Exceed YouTube API quota
+- Store duplicate videos (check by youtube_video_id)
+- Process videos older than 14 days
+- Store videos without required metadata
+
+**Output:** Records in `youtube_videos_staging` table with status 'pending'
+
+---
+
+### R1.2 Transform Phase Requirements
+
+**Edge Function:** `transform-videos`
+
+**MUST:**
+- Process videos with status 'pending' in staging table
+- Download Swedish captions (auto-generated or manual)
+- Extract relevant segments using AI (OpenAI GPT-4 or equivalent)
+- Detect sport category automatically
+- Validate against trusted channels list (§R2)
+- Filter negative content patterns (§R3)
+- Detect language (§R4)
+- Move validated data to `public.youtube_videos_operational`
+- Update staging status to 'processed' or 'failed'
+
+**AI Segment Extraction MUST:**
+- Use structured prompt for consistency
+- Extract segments with timestamps (start_time, end_time)
+- Include segment title and description
+- Validate segment length (minimum 30 seconds, maximum 10 minutes)
+- Assign relevance score (0-100)
+- Filter segments below relevance threshold (default: 70)
+
+**MUST NOT:**
+- Process videos without captions
+- Process videos from blocked channels
+- Create segments longer than 10 minutes
+- Include offensive language in segments
+- Process videos marked as 'failed' more than 3 times
+
+**Output:** Records in `youtube_videos_operational` and `video_segments_operational` tables
+
+---
+
+### R1.3 Distribute Phase Requirements
+
+**Edge Function:** `distribute-segments`
+
+**MUST:**
+- Move validated segments to `video_segments_operational`
+- Create public-facing records in `api_public.video_segments_feed` view
+- Assign unique segment_hash (not expose internal IDs)
+- Apply tier-based access controls (§R6)
+- Apply 24-hour delay for free tier users
+- Invalidate caches after distribution
+- Update keyword-specific materialized views
+
+**MUST NOT:**
+- Expose internal IDs (youtube_videos_staging.id, operational.id)
+- Expose videos still in staging
+- Expose videos marked as 'blocked' or 'failed'
+- Allow free tier users to see segments within 24 hours
+
+**Output:** Accessible segments via `api_public.video_segments_feed`
+
+---
+
+## §R2 Trusted Channels Requirements
+
+### R2.1 Approved Sources (Swedish Sports Media)
+
+**MUST Include:**
+- **SVT Sport** (channel_id: `UChIf5vNfLlRTPTNaZ2jx9rA`) - Public service broadcaster, high quality
+- **TV4 Sport** (channel_id: `UCPbVuqscnHrPaR7qdN3kYXw`) - Commercial broadcaster, reliable
+- **Fotbollskanalen** (channel_id: `UC5W2wd_2Zthvp4rM5ew5VQQ`) - Football-focused, good coverage
+
+**MUST Exclude:**
+- **Aftonbladet Sport** - Commercial tabloid, low quality, clickbait
+- **Expressen Sport** - Commercial tabloid, low quality, clickbait
+- Unknown or unverified channels
+
+### R2.2 AI Granskning (AI Review)
+
+**MUST:**
+- Use Claude Sonnet 4 (or equivalent high-quality LLM) for relevance check
+- Verify content is AIK-related (Allmänna Idrottsklubben football club)
+- Check timestamp precision (second-level accuracy required)
+- Validate that segments contain actual AIK content (not just mentions)
+
+**Rejection Criteria:**
+- Content not related to AIK (football club)
+- Timestamps imprecise (minute-level only)
+- Segment contains only passing mention of AIK
+- Content is about different AIK (e.g., AIK Bandy, AIK Handboll)
+
+### R2.3 Channel Validation
+
+**MUST:**
+- Verify channel_id against whitelist before processing
+- Block videos from non-trusted channels at fetch phase
+- Log blocked channels for review
+- Allow manual override for trusted channels not yet in whitelist
+
+**Implementation:** See `trustedChannels.ts` in `supabase/functions/_shared/`
+
+---
+
+## §R3 Negative Filters Requirements
+
+### R3.1 Content Exclusions
+
+**MUST filter out videos containing:**
+
+**Gambling Keywords:**
+- "betting", "odds", "casino", "spelbolag", "odds" (Swedish)
+- "bet365", "unibet", "betsson", etc (brands)
+
+**Competitor Keywords:**
+- Djurgården (rival club)
+- Hammarby (rival club)
+- Specific rival player names (configurable list)
+
+**Offensive Content:**
+- Profanity (Swedish and English)
+- Hate speech
+- Discriminatory language
+
+**Non-Sports Content:**
+- Political content
+- Advertising-only content
+- Off-topic discussions
+
+### R3.2 Filter Implementation
+
+**MUST:**
+- Check all text fields: title, description, caption transcripts
+- Use case-insensitive matching
+- Support regex patterns for complex filters
+- Log filtered content for review (not expose to users)
+- Allow manual override by administrators
+
+**MUST NOT:**
+- Filter legitimate sports content
+- Over-filter (false positives)
+- Expose filter rules to public API
+
+**Implementation:** See `negativeFilters.ts` in `supabase/functions/_shared/`
+
+---
+
+## §R4 Language Detection Requirements
+
+### R4.1 Supported Languages
+
+**Primary:**
+- **Swedish (sv)** - Main target language
+- **English (en)** - Secondary language (international content)
+
+**Handling:**
+- Auto-detect language using Google Translate API
+- Prefer Swedish content over English when both available
+- Reject content in unsupported languages
+
+### R4.2 Caption Requirements
+
+**MUST:**
+- Prioritize manual captions over auto-generated
+- Accept Swedish auto-generated captions if manual unavailable
+- Accept English captions if Swedish unavailable
+- Reject videos without captions in supported languages
+
+**Detection Logic:**
+```
+1. Check for Swedish manual captions → USE
+2. Check for Swedish auto-generated → USE
+3. Check for English manual captions → USE
+4. Check for English auto-generated → USE
+5. No supported captions → REJECT
+```
+
+**Implementation:** See `languageDetection.ts` in `supabase/functions/_shared/`
+
+---
+
+## §R5 Sport Detection Requirements
+
+### R5.1 Sport Categories
+
+**MUST detect and categorize:**
+
+**Primary:**
+- **Football/Soccer** (Fotboll) - Main focus
+- **Hockey** (Ishockey)
+- **Bandy** (Bandy)
+
+**Secondary:**
+- **Handball** (Handboll)
+- **Basketball** (Basketboll)
+- **Other** (Övrigt) - Catch-all for other sports
+
+### R5.2 Detection Rules
+
+**MUST:**
+- Analyze title and description for sport-specific keywords
+- Use AI to disambiguate when multiple sports mentioned
+- Default to "Football" for AIK-related content (AIK primarily football club)
+- Allow manual category override
+
+**Keywords:**
+- Football: "fotboll", "allsvenskan", "superettan", "mål", "match"
+- Hockey: "ishockey", "SHL", "puck", "målvakt"
+- Bandy: "bandy", "bandyallsvenskan", "bandymål"
+
+**MUST NOT:**
+- Categorize non-sports content
+- Miscategorize due to ambiguous keywords
+
+**Implementation:** See `sportDetection.ts` in `supabase/functions/_shared/`
+
+---
+
+## §R6 Membership Tiers Requirements
+
+### R6.1 Tier Definitions
+
+| Tier Name | Numeric ID | Daily Quota | Features | Price |
+|-----------|-----------|-------------|----------|-------|
+| **free** | 0 | 10 segments/day | Basic feed access, 24h delay | Free |
+| **basic** | 10 | 50 segments/day | + Save favorites, no delay | 49 SEK/mo |
+| **premium** | 20 | Unlimited | + AI summaries, advanced filters | 99 SEK/mo |
+| **enterprise** | 30 | Unlimited | + API access, priority support | Custom |
+
+### R6.2 Quota Enforcement
+
+**MUST:**
+- Check quota via `api_public.my_account_state` view
+- Block access when quota exceeded
+- Reset quota daily at 00:00 UTC
+- Display remaining quota to user
+- Prompt upgrade when approaching limit
+
+**Formula:**
+```sql
+has_quota = segments_used_today < segments_quota OR segments_quota = 0
+```
+(segments_quota = 0 means unlimited)
+
+### R6.3 Feature Gating
+
+**Free Tier:**
+- ✅ View segments via `video_segments_feed` (24h delay)
+- ✅ Search segments (limited results)
+- ❌ Save favorites
+- ❌ AI summaries
+- ❌ Advanced filters
+
+**Basic Tier:**
+- ✅ All Free features
+- ✅ No 24h delay
+- ✅ Save unlimited favorites
+- ❌ AI summaries
+- ❌ Advanced filters
+
+**Premium Tier:**
+- ✅ All Basic features
+- ✅ AI-generated summaries
+- ✅ Advanced filters (date range, sport category)
+- ✅ Priority processing
+
+**Enterprise Tier:**
+- ✅ All Premium features
+- ✅ API access (with API key)
+- ✅ Priority support
+- ✅ Custom integrations
+
+### R6.4 Tier Verification
+
+**MUST:**
+- Verify tier on every API request (via JWT claims or `my_account_state`)
+- Cache tier info for session duration (max 1 hour)
+- Re-verify after subscription changes
+- Handle tier downgrades gracefully
+
+**Implementation:** RLS policies on all tables + `api_public.my_account_state` view
+
+---
+
+## §R7 AI Segment Extraction Requirements
+
+### R7.1 AI Model Requirements
+
+**MUST use:**
+- **OpenAI GPT-4** (or equivalent high-quality LLM)
+- Temperature: 0.2 (low for consistency)
+- Max tokens: 2000 per segment extraction
+
+**MUST support:**
+- Structured output (JSON format)
+- Swedish language understanding
+- Sports terminology (Swedish football vocabulary)
+- Timestamp extraction (HH:MM:SS format)
+
+### R7.2 Segment Extraction Process
+
+**MUST:**
+1. Analyze full video transcript
+2. Identify AIK-relevant segments
+3. Extract start and end timestamps (second precision)
+4. Generate segment title (max 100 characters)
+5. Generate segment description (max 500 characters)
+6. Assign relevance score (0-100)
+7. Filter segments below threshold (default: 70)
+
+**Segment Structure:**
+```json
+{
+  "segments": [
+    {
+      "start_time": "00:15:30",
+      "end_time": "00:18:45",
+      "title": "AIK's andra mål av Sebastian Larsson",
+      "description": "Sebastian Larsson skjuter från distans...",
+      "relevance_score": 95,
+      "keywords": ["AIK", "mål", "Sebastian Larsson"]
+    }
+  ]
+}
+```
+
+### R7.3 Quality Requirements
+
+**MUST ensure:**
+- Timestamps accurate to the second
+- Titles descriptive and concise
+- Descriptions provide context
+- Relevance scores calibrated (>90 = highly relevant, 70-90 = relevant, <70 = irrelevant)
+- No duplicate segments from same video
+
+**MUST NOT:**
+- Extract segments without clear AIK relevance
+- Include segments with offensive language
+- Extract segments longer than 10 minutes
+- Hallucinate timestamps (must exist in transcript)
+
+**Implementation:** See `aiSegmentExtraction.ts` in `supabase/functions/_shared/`
+
+---
+
+## §R8 Data Exposure Requirements
+
+### R8.1 What Can Be Exposed via api_public
+
+**✅ ALLOWED (via api_public views/RPC):**
+- `video_segments_feed` - Curated, public-facing segments
+- `my_account_state` - User's own tier/quota info
+- `user_favorites` - User's own saved segments (filtered by auth.uid())
+- Aggregated statistics (total segments, popular keywords)
+
+**❌ FORBIDDEN (never expose directly):**
+- `youtube_videos_staging` - Internal staging table
+- `youtube_videos_operational` - Internal operational table
+- Internal IDs (staging.id, operational.id)
+- Processing status fields (pending, processing, failed)
+- API keys, service credentials
+- Other users' data (must filter by auth.uid())
+
+### R8.2 Exposure Pattern
+
+**Use views with SECURITY INVOKER:**
+```sql
+CREATE OR REPLACE VIEW api_public.video_segments_feed
+WITH (security_invoker = true)
+AS
+SELECT
+  segment_hash,      -- ✅ External identifier
+  title,
+  description,
+  published_at,
+  keyword,
+  thumbnail_url,
+  video_duration
+  -- ❌ NO: id, operational_video_id, staging_id, processing_status
+FROM public.video_segments_operational
+WHERE status = 'published'
+  AND (tier_requirement <= get_user_tier_id() OR get_user_tier_id() >= 20); -- Tier filtering
+```
+
+**Use RPC for writes with SECURITY DEFINER:**
+```sql
+CREATE OR REPLACE FUNCTION api_public.save_favorite_segment(
+  p_segment_hash text
+)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO 'public', 'pg_temp'
+AS $$
+BEGIN
+  INSERT INTO public.user_favorites (user_id, segment_hash)
+  VALUES (auth.uid(), p_segment_hash)
+  RETURNING id;
+END;
+$$;
+```
+
+### R8.3 Verification Checklist
+
+Before exposing any data via `api_public`:
+- [ ] Uses external identifiers (segment_hash), not internal IDs
+- [ ] Filters by `auth.uid()` for user-specific data
+- [ ] Applies tier-based access controls
+- [ ] Uses SECURITY INVOKER for reads (RLS applies)
+- [ ] Uses SECURITY DEFINER + `SET search_path` for writes
+- [ ] No internal status fields exposed
+- [ ] No sensitive metadata exposed
+- [ ] Grants are explicit (REVOKE ALL, then GRANT specific roles)
+
+---
+
+## §R9 Update Guidelines
+
+### When to Update This File
+
+**Update requirements.mdc when:**
+- Adding new features (new functional requirements)
+- Changing business logic (tier quotas, filtering rules)
+- Modifying data flow (fetch → transform → distribute)
+- Updating AI prompts (segment extraction logic)
+- Adding/removing trusted channels
+- Changing negative filters
+
+**DO NOT update when:**
+- Fixing bugs (that's implementation, not requirements)
+- Refactoring code (no functional change)
+- Optimizing performance (implementation detail)
+- Changing database indexes (implementation detail)
+
+### Requirements vs Implementation
+
+**Requirements (this file):**
+- WHAT the system must do
+- Business rules
+- User-facing features
+- Data validation rules
+
+**Implementation (core-rules.mdc, pipeline-rules.mdc):**
+- HOW to implement
+- Technical patterns
+- Code examples
+- Error handling
+
+**Example:**
+- ✅ Requirement: "MUST filter gambling keywords" (§R3.1)
+- ✅ Implementation: "Use negativeFilters.ts with regex patterns" (pipeline-rules.mdc)
+
+---
+
+## §R10 SEO & Discovery Requirements
+
+### R10.1 Sitemap
+
+**MUST:**
+- Expose a dynamic `sitemap.xml` for search engine crawlers.
+- Generate sitemap via Edge Function (not static file) so it includes all indexable URLs (news, chronicles, static pages).
+- Limit sitemap generation to max 1000 URLs per content type (news, chronicles, video klipp `/klipp/:segmentHash`) to protect database load.
+- Cache sitemap response for at least 1 hour (`Cache-Control: public, max-age=3600`).
+- Include homepage, `/om-oss`, and all public article/chronicle URLs with `lastmod` and `priority`. Do **not** list `/auth` or other non-indexable pages in the sitemap.
+
+**MUST NOT:**
+- Expose internal or admin URLs in the sitemap.
+- Omit the sitemap URL from `robots.txt` (Sitemap directive must point to production URL).
+
+**Implementation:** Edge Function `sitemap`; Vercel rewrite `/sitemap.xml` → Supabase Edge Function. See core-rules.mdc §0.9 (Vercel rewrites), §7 (anti-scraping limits).
+
+### R10.2 About Page (E-E-A-T)
+
+**MUST:**
+- Provide a dedicated "Om oss" (About) page at `/om-oss`.
+- Content MUST state that the site is "by supporters, for supporters" and is not an official AIK product.
+- Include mission, how content is aggregated (e.g. AI curation), and a contact method (e.g. email).
+- Use unique `<title>` and `<meta name="description">` for the About page (SEO component).
+
+**MUST NOT:**
+- Claim official affiliation with AIK Fotboll or AIK Hockey unless true.
+
+**Implementation:** `src/pages/About.tsx`; route `/om-oss`; footer link in Layout.
+
+### R10.3 Social Previews (Open Graph / Twitter)
+
+**MUST:**
+- Serve correct Open Graph and Twitter Card meta tags for shared links (chronicles, news).
+- Use a server-side proxy (Edge Function) for bot user-agents so crawlers receive full HTML with meta tags; humans are redirected to the SPA.
+- Bot detection MUST include: facebookexternalhit, facebot, twitterbot, linkedinbot, whatsapp, telegrambot, slackbot, googlebot, bingbot, yandex, baiduspider.
+- Canonical share URL format: `https://aikurerad.se/share/{type}/{id}` (type = chronicle | news).
+
+**MUST NOT:**
+- Expose open-redirect via share URLs; origin allowlist (aikurerad.se, localhost, vercel preview) is required.
+
+**Implementation:** Edge Function `share-proxy`; Vercel rewrites `/share/chronicle/:slug` and `/share/news/:id` to share-proxy. See core-rules.mdc §0.9.
+
+### R10.4 Legacy URL Handling
+
+**MUST:**
+- Support legacy query-param deep links: `/?chronicle=<slug>` and `/?news=<id>` by redirecting (client-side) to `/chronicle/<slug>` and `/news/<id>`.
+
+**Implementation:** `src/pages/Index.tsx` (useEffect reading searchParams and calling navigate).
+
+---
+
+**END OF REQUIREMENTS**
+
+For implementation details, see:
+- `core-rules.mdc` - Database patterns, RLS, schema rules
+- `pipeline-rules.mdc` - Pipeline implementation, Edge Functions
+- `advanced-rules.mdc` - Advanced patterns, edge cases

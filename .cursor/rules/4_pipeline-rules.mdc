@@ -1,0 +1,1522 @@
+---
+description: "Pipeline implementation (HOW pipeline works). YouTube fetch/transform/distribute phases, Edge Function patterns, batch processing. Load when implementing pipeline logic or working with video processing."
+alwaysApply: false
+---
+
+# AIKurerad Pipeline Rules - Implementation (File 4/5)
+
+**File Size:** ~30KB (safe for Cursor patterns match)  
+**Purpose:** HOW pipeline works - implementation patterns  
+**Mode:** Patterns Match (auto-loaded for pipeline/edge function work)
+
+**Part of 5-file split:**
+1. `quick.mdc` - Always loaded, STOP-WORDS, Section Map
+2. `core-rules.mdc` - Core implementation patterns (database, RLS, schema)
+3. `requirements.mdc` - Functional requirements (WHAT system must do)
+4. **`pipeline-rules.mdc`** â† YOU ARE HERE (HOW pipeline works)
+5. `advanced-rules.mdc` - Advanced patterns, edge cases (WHY)
+
+**Referenced from:** `quick.mdc` â†’ Pipeline implementation  
+**On-demand loading:** `@file .cursor/rules/pipeline-rules.mdc [LINE_START, LINE_END]`
+
+---
+
+## ðŸ“‘ INDEX - Pipeline Sections (Hierarkisk Navigation)
+
+**INSTRUKTION:** Ladda INDEX fÃ¶rst (denna sektion), hitta rÃ¤tt avsnitt, ladda ENDAST det avsnittet.
+
+**Ladda detta INDEX:** `@file .cursor/rules/pipeline-rules.mdc [1, 80]`
+
+| Section | Lines | Topic | Command |
+|---------|-------|-------|---------|
+| **Intro & Architecture** | 80-180 | DO/DON'T, SPOTs, Internal tables | `@file pipeline-rules.mdc [80, 180]` |
+| **Edge Functions Overview** | 181-280 | Functions list, patterns | `@file pipeline-rules.mdc [181, 280]` |
+| **Fetch Phase** | 281-380 | fetch-youtube-videos implementation | `@file pipeline-rules.mdc [281, 380]` |
+| **Perplexity Scraper (RSS fetch)** | – | Incremental fetch, staging, Inngest step 1b | `@file docs/pipeline-analysis/perplexity_scraper.md` |
+| **Transform Phase** | 381-520 | transform-videos, AI extraction | `@file pipeline-rules.mdc [381, 520]` |
+| **Distribute Phase** | 521-620 | distribute-segments, caching | `@file pipeline-rules.mdc [521, 620]` |
+| **Batch Processing** | 621-720 | Batch patterns, timeouts, fixes | `@file pipeline-rules.mdc [621, 720]` |
+| **Trusted Channels Impl** | 721-800 | Channel validation implementation | `@file pipeline-rules.mdc [721, 800]` |
+| **Â§DIAGRAMS - Visual Flowcharts** | 801-1001 | Pipeline diagrams index â†’ docs/pipeline-analysis | `@file pipeline-rules.mdc [801, 1001]` |
+
+**Usage Pattern:**
+```
+1. User asks: "Hur implementerar jag fetch phase?"
+2. Agent loads INDEX: @file pipeline-rules.mdc [1, 80]
+3. Agent finds: Fetch Phase = lines 281-380
+4. Agent loads: @file pipeline-rules.mdc [281, 380]
+5. Agent reads implementation and answers
+```
+
+**Relation to Other Files:**
+- **Requirements (WHAT):** See `requirements.mdc` Â§R1 (Pipeline Requirements)
+- **Core Rules (HOW):** See `core-rules.mdc` Â§0.5-0.9 (Edge Functions)
+- **Advanced (WHY):** See `advanced-rules.mdc` (Historical decisions)
+
+---
+
+  Allt filter sker med **auth.uid()** och **tier-baserad filtrering**.  
+  Frontend anvÃ¤nder enbart **apiPublic-klienten** (schema('api_public')).
+
+## 2) DO / DON'T
+- **DO**
+  - Skapa alltid wrappers i **api_public** fÃ¶r lÃ¤s/skriv.
+  - Filtrera alltid pÃ¥ **auth.uid()** och **tier** i api_public-vyer.
+  - **SECURITY INVOKER** pÃ¥ alla api_public-vyer/RPC.
+  - Ã…teranvÃ¤nd befintliga funktioner/vyer i stÃ¤llet fÃ¶r att lÃ¤sa rÃ¥tabeller.
+- **DON'T**
+  - Frontend fÃ¥r aldrig lÃ¤sa **api_private** eller **public** direkt.
+  - Skapa aldrig osÃ¤kra SECURITY DEFINER-funktioner utan **set search_path**.
+  - HÃ¥rdkoda tabellnamn i api_public-vyer om wrappers finns.
+  - Exponera **aldrig** `youtube_videos_staging` eller `youtube_videos_operational` via `api_public`.
+
+## 3) Single Sources of Truth (SPOTs)
+
+### `api_public.my_account_state` = Single Source of Truth for User State
+InnehÃ¥ller tier, abonnemang, segment-limiter, Stripe-status.  
+Korsar endast wrappers/funktioner: t.ex. `api_public.has_tier()`, `public.get_user_subscription_status(u.id)`.
+
+### `api_public.video_segments_feed` = Single Source of Truth for Video Segments Data
+**âš ï¸ CANONICAL VIEW:** All video segment data access MUST use `api_public.video_segments_feed`. This view applies tier-based filtering, 24h delay for free tier, and hashed segment IDs for scraping protection.
+
+### `rules.mdc` Â§ 5.5 = Single Source of Truth for SECURITY DEFINER vs INVOKER Decisions
+**âš ï¸ AUTHORITATIVE REFERENCE:** All SECURITY DEFINER exceptions MUST be documented in `rules.mdc` Â§ 5.5. If a view or function uses SECURITY DEFINER, it MUST be listed there with justification. This section is the only source of truth for security exception decisions.
+
+### Internal-Only Tables (Never Exposed)
+**âš ï¸ CRITICAL:** The following tables are **internal-only** and must **NEVER** be exposed via `api_public` views or RPC functions. They are updated in the background by YouTube API pipeline:
+
+- **`public.youtube_videos_staging`** â€” Staging table for YouTube API data. Videos inserted by `fetch-youtube-videos` edge function, processed by `transform-videos`, then moved to `youtube_videos_operational`. RLS enabled but service_role only for writes. Only accessible via `SERVICE_ROLE_KEY`.
+- **`public.youtube_videos_operational`** â€” Operational table for processed videos. Videos transformed here by `transform-videos` edge function, then segments extracted and moved to `video_segments`. RLS enabled but service_role only for writes. Only accessible via `SERVICE_ROLE_KEY`.
+
+**Rules:**
+- âŒ **NEVER** create views in `api_public` that expose these tables
+- âŒ **NEVER** create RPC functions that expose these tables to clients
+- âœ… **ONLY** access via `SERVICE_ROLE_KEY` in edge functions and cron jobs
+
+### How Edge Functions Write to Internal Tables
+
+**THE CRITICAL PATTERN:** PostgREST can ONLY access `api_public` schema. This means:
+
+1. **Edge Functions CAN read internal tables directly:**
+```typescript
+// âœ… Direct read is OK
+const { data } = await supabase
+  .schema('public')
+  .from('youtube_videos_staging')
+  .select('*');
+```
+
+2. **Edge Functions CANNOT write to internal tables via PostgREST:**
+```typescript
+// âŒ THIS WILL FAIL WITH 406/PGRST106
+const { data, error } = await supabase
+  .schema('public')
+  .from('youtube_videos_staging')
+  .upsert(videoRecords);
+// Error: proxy_status: PostgREST; error=PGRST106
+```
+
+3. **Edge Functions MUST use api_public RPC functions for writes:**
+```typescript
+// âœ… CORRECT: Use SECURITY DEFINER RPC
+const { data, error } = await supabase
+  .schema('api_public')
+  .rpc('save_staging_video', {
+    p_youtube_video_id: video.videoId,
+    p_title: video.title,
+    // ... all parameters
+  });
+```
+
+**Why This Architecture:**
+- PostgREST is configured to expose ONLY `api_public` schema (`db-schemas = "api_public"`)
+- Internal `public` tables require controlled write access via `SECURITY DEFINER` RPC
+- RPC functions provide validation, logging, and audit trail for all writes
+- Defense-in-depth: Schema isolation + grants + explicit RPC interface
+
+**Reference Implementation:**
+- `api_public.save_operational_video()` in `supabase/migrations/20250119000000_api_public_pipeline_rpc_functions.sql` (lines 96-185)
+- Used by `transform-videos` Edge Function to write to `public.youtube_videos_operational`
+- Pattern: Take all columns as parameters, INSERT with ON CONFLICT, return ID
+- Grants: `GRANT EXECUTE TO service_role` only
+
+**If You See 406/PGRST106:**
+1. You are trying to write to a non-exposed schema
+2. Create `api_public` RPC function with `SECURITY DEFINER`
+3. Update Edge Function to call RPC instead of direct write
+4. See Â§0.6 Edge Function Write Patterns and Â§12 Troubleshooting
+
+## ðŸ”§ Edge Functions (Supabase)
+Current edge functions handle:
+- `fetch-youtube-videos` - Fetches videos from YouTube API, saves to staging
+- `fetch-perplexity-articles` - Fetches articles via OpenRouter/Perplexity, incremental per phrase, writes to `articles_staging` via `api_public.stage_rss_article`. See `docs/pipeline-analysis/perplexity_scraper.md`.
+- `fetch-rss-articles` - Fetches RSS/HTML feeds, saves to staging
+- `transform-videos` - Transforms staging data, extracts segments, saves to operational
+- `distribute-segments` - Distributes segments to keyword-specific materialized views
+- `process-youtube-pipeline` - Orchestrates fetch â†’ transform â†’ distribute in sequence
+- `process-cron-queue` - Processes jobs from `cron_job_queue` table
+
+### Edge Function Patterns (With Code Examples)
+
+#### Pattern 1: YouTube API Fetching (fetch-youtube-videos)
+**Purpose:** Fetch videos from YouTube API, apply filters, save to staging.
+
+**Client Setup:**
+```typescript
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  Deno.env.get('SUPABASE_URL')!,
+  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+);
+```
+
+**Reading Keyword Config:**
+```typescript
+// Get keyword configuration (via api_public RPC)
+const { data: config, error } = await supabase
+  .schema('api_public')
+  .rpc('get_keyword_config', { p_keyword: 'AIK' });
+
+if (!config) throw new Error('Keyword config not found');
+```
+
+**Saving to Staging (CORRECT PATTERN):**
+```typescript
+// âŒ WRONG: Direct write to staging table
+// const { error } = await supabase
+//   .schema('public')
+//   .from('youtube_videos_staging')
+//   .upsert(videoRecords);  // Results in 406/PGRST106
+
+// âœ… CORRECT: Use api_public RPC function
+for (const video of filteredVideos) {
+  const { data: videoId, error } = await supabase
+    .schema('api_public')
+    .rpc('save_staging_video', {
+      p_youtube_video_id: video.videoId,
+      p_youtube_channel_id: video.channelId,
+      p_title: video.title,
+      p_description: video.description,
+      // ... all other parameters
+    });
+  
+  if (error) console.error('Failed to save video:', error);
+}
+```
+
+**Reference:** `supabase/functions/fetch-youtube-videos/index.ts`
+
+---
+
+#### Pattern 2: Transformation (transform-videos)
+**Purpose:** Read from staging, extract timestamps/segments, save to operational.
+
+**Reading from Staging (Direct Access OK):**
+```typescript
+// âœ… Direct read from internal table with SERVICE_ROLE_KEY
+const { data: stagingVideos, error } = await supabase
+  .schema('api_public')
+  .rpc('get_pending_staging_videos');  // SECURITY DEFINER RPC
+
+// Or for direct internal read (if needed):
+const { data: videos } = await supabase
+  .schema('public')
+  .from('youtube_videos_staging')
+  .select('*')
+  .eq('processing_status', 'pending');
+```
+
+**Writing to Operational (Use RPC):**
+```typescript
+// âœ… CORRECT: Use api_public RPC function
+const { data: operationalId, error } = await supabase
+  .schema('api_public')
+  .rpc('save_operational_video', {
+    p_staging_id: video.id,
+    p_youtube_video_id: video.youtube_video_id,
+    p_title: video.title,
+    // ... all parameters
+  });
+```
+
+**Creating Segments (Use RPC):**
+```typescript
+// âœ… CORRECT: Use api_public RPC function
+for (const segment of extractedSegments) {
+  const { error } = await supabase
+    .schema('api_public')
+    .rpc('create_video_segment', {
+      p_operational_video_id: operationalId,
+      p_keyword: 'AIK',
+      p_start_time: segment.startTime,
+      p_description: segment.description,
+      // ... all parameters
+    });
+}
+```
+
+**Reference:** 
+- `supabase/functions/transform-videos/index.ts`
+- `api_public.save_operational_video()` in migration `20250119000000_api_public_pipeline_rpc_functions.sql`
+
+---
+
+#### Pattern 3: Distribution (distribute-segments)
+**Purpose:** Update segment distribution status, refresh materialized views.
+
+**Reading Pending Segments:**
+```typescript
+const { data: segments, error } = await supabase
+  .schema('api_public')
+  .rpc('get_pending_segments', { p_keyword: 'AIK' });
+```
+
+**Updating Distribution Status:**
+```typescript
+const { error } = await supabase
+  .schema('api_public')
+  .rpc('update_segment_distribution', {
+    p_segment_id: segment.id,
+    p_status: 'distributed'
+  });
+```
+
+**Refreshing Materialized Views:**
+```typescript
+const { error } = await supabase
+  .schema('api_public')
+  .rpc('refresh_materialized_view', {
+    p_view_name: 'keyword_aik_feed'
+  });
+```
+
+**Reference:** `supabase/functions/distribute-segments/index.ts`
+
+---
+
+### Key Takeaways
+
+1. **Always use `SERVICE_ROLE_KEY`** in Edge Functions (never `ANON_KEY`)
+2. **Read internal tables:** Direct query with `.schema('public').from('table').select()` is OK
+3. **Write to internal tables:** MUST use `api_public` RPC with `SECURITY DEFINER`
+4. **Forward JWT when needed:** For user-specific operations, forward `Authorization` header
+5. **Schema qualify everything:** Always specify `.schema('api_public')` or `.schema('public')`
+6. **Error 406/PGRST106?** â†’ You're writing to non-exposed schema â†’ Create RPC function
+
+## ðŸ“± Frontend Patterns
+- **All Supabase IO via `apiPublic`-klienten** (schema('api_public')).  
+- FÃ¶rbjud `supabase.from(...)` i appkod (ESLint-regel).  
+- Centralisera anrop i `src/lib/api.ts`.
+
+### Key API Endpoints
+- `api_public.video_segments_feed` - Main feed view with tier-based filtering
+- `api_public.get_keyword_feed(p_keyword, p_limit, p_offset)` - Get segments for a keyword
+- `api_public.search_segments(p_query, p_keyword, p_limit, p_offset)` - Full-text search on segments
+- `api_public.my_account_state` - User's tier, subscription, quotas
+
+## ðŸŽ¨ Keyword Configuration System
+- **Centralized Config**: All keyword-specific settings stored in `public.keyword_library.keyword_config` (JSONB)
+- **Configuration Includes**:
+  - YouTube API parameters (channelId, publishedAfter, maxResults, regionCode, etc.)
+  - App theme (font colors, branding)
+  - Negative filters (keyword-specific blocklists)
+  - Include/exclude rules
+  - Segment extraction parameters (timestamp pattern, min/max segments)
+  - Query parameters
+- **Adding New Keywords**: Simply insert into `keyword_library` with `keyword_config` JSONB - no code changes needed
+
+## ðŸš« Important DON'Ts
+- **DON'T** use `VITE_*` environment variables (not supported)
+- **DON'T** modify Supabase reserved schemas (auth, storage, etc.)
+- **DON'T** store tiers on user/profile tables
+- **DON'T** expose `youtube_videos_staging` or `youtube_videos_operational` via `api_public`
+- **DON'T** hardcode keyword filters or synonyms (use `keyword_library` and `keyword_synonyms` tables)
+- **DON'T** query `public` schema directly from frontend (use `api_public`)
+
+## âœ… Current Working Systems
+- YouTube API fetching with negative filtering
+- Video transformation and segment extraction
+- Keyword-based distribution
+- Tier-based access control (Release 1: free tier with 24h delay)
+- Centralized keyword configuration
+- Scraping protection (hashed IDs, hard limits, authentication required)
+
+## ðŸ”„ When Refactoring
+1. List files to be created/modified first
+2. Maintain EXACT same functionality
+3. Test all code paths work identically
+4. Clean up old/dead code after verification
+5. Keep existing working systems intact
+
+## ðŸ“ž Emergency Context
+If users report issues:
+1. Check console logs first (use debugging tools)
+2. Verify RLS policies for data visibility issues
+3. Check authentication status for protected routes
+4. Verify tier-based access control is working
+5. Check Edge Function logs for pipeline errors
+
+## ðŸŽ¯ Business Context
+- Aikurerad v2 is a Swedish sports/news platform focused on AIK Football and Hockey
+- Focus on keyword-based video curation and segment extraction
+- Release 1: Free tier with 24h delay
+- Release 2: Stripe integration for paid tiers with real-time access
+- Multi-tier architecture with role-based access
+
+---
+
+## 13) YouTube Pipeline Requirements
+
+**Purpose:** This section documents the complete Fetch â†’ Transform â†’ Distribute pipeline for YouTube video ingestion and segment extraction. It defines the header-lineitem pattern (operational videos â†’ video segments) and specifies requirements for each pipeline stage.
+
+### 13.1 Quick Reference: Decision Tree
+
+```
+â”Œâ”€ VIDEO FETCHED (staging table) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚                                                             â”‚
+â”œâ”€ Language Check â”€â†’ Not sv/no/da/en? â”€â†’ REJECT             â”‚
+â”œâ”€ Negative Keywords? â”€â†’ Yes (pakistan/urdu/etc)? â”€â†’ REJECT â”‚
+â”‚                                                             â”‚
+â”œâ”€ Parse full_description for timestamps                     â”‚
+â”‚   â”‚                                                         â”‚
+â”‚   â”œâ”€ NO timestamps found?                                  â”‚
+â”‚   â”‚   â””â”€â†’ Create 1 segment at 00:00:00 âœ“                  â”‚
+â”‚   â”‚       (Entire video is AIK-relevant)                   â”‚
+â”‚   â”‚                                                         â”‚
+â”‚   â”œâ”€ Timestamps found?                                     â”‚
+â”‚   â”‚   â”œâ”€ Phase 1: Check text after each timestamp         â”‚
+â”‚   â”‚   â”‚   â”œâ”€ Contains AIK/Gnaget/AIK:s/etc? â”€â†’ Create seg â”‚
+â”‚   â”‚   â”‚   â””â”€ No AIK keyword? â”€â†’ Skip timestamp            â”‚
+â”‚   â”‚   â”‚                                                    â”‚
+â”‚   â”‚   â””â”€ 0 segments created after Phase 1?                â”‚
+â”‚   â”‚       â””â”€â†’ Phase 2: AI contextual validation           â”‚
+â”‚   â”‚           â”œâ”€ AI validates relevance? â”€â†’ Create segs   â”‚
+â”‚   â”‚           â””â”€ AI rejects? â”€â†’ 1 segment at 00:00:00    â”‚
+â”‚                                                             â”‚
+â””â”€ RESULT: 0 to N segments per operational video â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+```
+
+**Single-Line Rules (ALWAYS ENFORCE):**
+- âœ… Accept ALL view/like counts (no `minViews` filter, default = 0)
+- âœ… One operational video â†’ Multiple segments (header-lineitem pattern)
+- âœ… Use `full_description` (NEVER `description`) for timestamp extraction
+- âœ… Extract text between timestamps for `keyword_timestamp_description`
+- âŒ NEVER use `title` as fallback for `keyword_timestamp_description`
+- âŒ NEVER filter by popularity metrics (`minViews > 0`)
+
+---
+
+### 13.2 Data Model: Header-LineItem Pattern
+
+**Requirement:** Videos follow a one-to-many relationship pattern:
+
+```
+youtube_videos_operational (HEADER)
+    â†“ (one-to-many)
+video_segments (LINE ITEMS)
+```
+
+**Key Principles:**
+1. **One operational video = One header record**
+   - Contains: title, description, channel, published_at, view_count, etc.
+   - Primary key: `id` (UUID)
+   - Natural key: `youtube_video_id` (TEXT, unique)
+
+2. **Multiple segments = Multiple line items**
+   - Each segment references `operational_video_id` (FK)
+   - Each segment = ONE timestamp mention of AIK in the video
+   - Segments are NOT duplicatesâ€”they're breakdowns of specific moments
+
+3. **Segment Count Scenarios:**
+   - 0 segments: Video rejected (language/negative keywords)
+   - 1 segment: No timestamps OR fallback default at 00:00:00
+   - N segments: N timestamps where "AIK" appears in following text
+
+**Test Query:**
+```sql
+-- Verify one-to-many relationship
+SELECT 
+  operational_video_id,
+  COUNT(*) as segment_count,
+  array_agg(keyword_timestamp ORDER BY keyword_timestamp_seconds) as timestamps
+FROM public.video_segments
+GROUP BY operational_video_id
+HAVING COUNT(*) > 1;
+-- Expected: Videos with multiple AIK mentions have multiple segments
+```
+
+#### 13.2.6 Sport-Specific Segment Splitting
+
+**Hockey Exception (5+ Timestamps):**
+- IF `sport_category = 'hockey'` AND `full_description` contains 5+ timestamps
+- THEN create only 1 segment at `00:00:00` (default segment)
+- Reason: Hockey highlights contain many goals (10-20+), splitting creates too many line items
+
+**Football Standard (Up to 20 Segments):**
+- IF `sport_category = 'football'` AND `full_description` contains timestamps
+- THEN create multiple segments, capped at 20 maximum
+- Reason: Football highlights have fewer goals (1-5 typically), each is significant
+
+**Other Sports:**
+- Follow football pattern: Split up to 20 segments maximum
+
+**Examples:**
+- Hockey video with 12 timestamps â†’ 1 segment at 00:00:00
+- Football video with 3 timestamps â†’ 3 segments (one per goal)
+- Football video with 50 timestamps (compilation) â†’ 20 segments (capped)
+
+**Implementation:** `supabase/functions/transform-videos/index.ts` lines 293-340
+
+---
+
+### 13.3 Field Contracts (TypeScript Interface Specification)
+
+#### 13.3.1 FETCH Layer Contract
+
+```typescript
+// Output: Records in youtube_videos_staging
+interface FetchOutput {
+  youtube_video_id: string;         // Primary identifier
+  title: string;                    // Video title
+  description: string;               // Truncated (~150 chars) for display
+  full_description: string;          // COMPLETE YouTube description (CRITICAL)
+  channel_title: string;
+  published_at: timestamptz;
+  view_count: bigint;                // NO filtering by this field
+  like_count: bigint;                // NO filtering by this field
+  duration: string;                  // ISO 8601 format (e.g., "PT12M34S")
+  region_code: string;               // ISO 3166-1 alpha-2
+  // ... other metadata
+}
+
+// CRITICAL VALIDATIONS:
+// âœ… full_description.length >= description.length
+// âœ… full_description !== title
+// âœ… full_description contains actual YouTube description content
+// âŒ NEVER: full_description = '' (empty)
+// âŒ NEVER: full_description = description (truncated)
+```
+
+#### 13.3.2 TRANSFORM Layer Contract
+
+```typescript
+// Input: youtube_videos_staging records
+// Output: Operational video (header) + Segments (line items)
+interface TransformOutput {
+  operational: OperationalVideo;    // 1 header record
+  segments: VideoSegment[];         // 0 to N line item records
+}
+
+// Invariants (ALWAYS TRUE):
+// - segments.length >= 0
+// - If timestamps exist AND keyword found â†’ segments.length >= 1
+// - If no timestamps â†’ segments.length === 1 (default at 00:00:00)
+// - All segments reference same operational_video_id
+// - Each segment has unique keyword_timestamp within same video
+```
+
+#### 13.3.3 Segment Field Specification
+
+```typescript
+interface VideoSegment {
+  // Timestamp fields (dual format: text + seconds)
+  keyword_timestamp: string;               // "1:23" format (TEXT for YouTube URLs)
+  keyword_timestamp_seconds: number;       // 83 (INTEGER for calculations/sorting)
+  
+  // Description fields
+  keyword_timestamp_description: string;   // Text extracted from full_description
+  // CRITICAL: MUST be extracted text between timestamps
+  // âŒ WRONG: keyword_timestamp_description = title (fallback)
+  // âœ… RIGHT: keyword_timestamp_description = extractTextAfterTimestamp(full_description, timestamp)
+  
+  segment_description: string;             // Can be same as keyword_timestamp_description
+  
+  // Segment boundaries
+  segment_start_seconds: number;           // = keyword_timestamp_seconds
+  segment_end_seconds: number | null;      // Next timestamp or null (end of video)
+  
+  // Deep link (final product)
+  youtube_deep_link: string;               // "https://youtube.com/watch?v=ID&t=83s"
+  // Formula: `${base_url}?v=${youtube_video_id}&t=${keyword_timestamp_seconds}s`
+  
+  // Denormalized fields (from operational video)
+  video_title: string;
+  video_channel_title: string;
+  video_published_at: timestamptz;
+  video_region: string;
+  view_count: bigint;
+  like_count: bigint;
+  sport_category: string;                  // 'football' | 'hockey' | null
+}
+```
+
+---
+
+### 13.4 Known Issues (Bugs Discovered 2025-11-26)
+
+#### Bug #1: Title Used as Fallback for keyword_timestamp_description
+
+**Symptom:**
+```sql
+-- ALL segments have keyword_timestamp_description = video_title
+SELECT 
+  youtube_video_id,
+  keyword_timestamp_description,
+  video_title,
+  keyword_timestamp_description = video_title as is_same
+FROM public.video_segments
+LIMIT 10;
+-- Result: is_same = TRUE for 100% of records
+```
+
+**Example:**
+```
+Video: AZhQJZAh3no (Fotbollsmorgon)
+full_description contains:
+  "43:01 Erik Flataker"
+  "1:02:35 Noa Bachner"
+  
+But segment has:
+  keyword_timestamp: "00:00:00"
+  keyword_timestamp_description: "Bachner & BjÃ¤rsmyr om kvalfiaskot..." (= TITLE)
+```
+
+**Root Cause:** Unknown fallback logic overrides extracted text with title when:
+- `extractTextAfterTimestamp()` returns empty string
+- Timestamp not found in `full_description`
+- Fallback creates single segment at 00:00:00 with title as description
+
+**Expected Behavior:**
+```typescript
+// CORRECT: Use extracted text (can be empty)
+keyword_timestamp_description = extractTextAfterTimestamp(full_description, timestamp);
+
+// WRONG: Fallback to title
+if (!keyword_timestamp_description) {
+  keyword_timestamp_description = title; // âŒ BUG IS HERE
+}
+```
+
+**Fix Required:** Locate and remove title fallback logic. If extraction returns empty, keep it empty or use empty string, NOT title.
+
+---
+
+#### Bug #2: Multiple Timestamps Not Creating Multiple Segments
+
+**Symptom:**
+```sql
+-- Videos with 5+ timestamps only have 1 segment at 00:00:00
+SELECT 
+  op.youtube_video_id,
+  op.title,
+  COUNT(vs.id) as segment_count,
+  array_agg(vs.keyword_timestamp) as timestamps
+FROM public.youtube_videos_operational op
+LEFT JOIN public.video_segments vs ON vs.operational_video_id = op.id
+WHERE op.full_description ~ '\d{1,2}:\d{2}' -- Has timestamps
+GROUP BY op.youtube_video_id, op.title
+HAVING COUNT(vs.id) = 1;
+-- Expected: 0 results (all should have multiple segments)
+-- Actual: Many results with single 00:00:00 segment
+```
+
+**Example:**
+```
+Video: AZhQJZAh3no
+full_description contains 7 timestamps:
+  00:00 Programstart
+  22:43 Robins intervjuer med landslaget
+  43:01 Erik Flataker
+  59:34 Reklampaus
+  1:02:35 Noa Bachner
+  1:48:18 Mattias BjÃ¤rsmyr
+  2:00:05 Reklampaus
+  
+But only 1 segment created at 00:00:00
+```
+
+**Root Cause:** Phase 1 keyword filter was TOO STRICT:
+- Checked if "AIK" appears in text after each timestamp
+- Rejected ALL timestamps if no direct "AIK" mention
+- Fell back to single 00:00:00 segment
+- Video already validated at operational level, so keyword filter was redundant
+
+**Status:** âœ… RESOLVED (2025-11-26)
+
+**Fix Applied:**
+1. Removed Phase 1 keyword filter (lines 310-317 in transform-videos/index.ts)
+2. Videos already validated at operational level (language, sport, negative keywords)
+3. Added sport-specific logic: Hockey 5+ timestamps â†’ 1 segment (Â§13.2.6)
+4. Football/other sports: Create segments for ALL timestamps (max 20)
+
+**New Behavior:**
+- **Hockey** (5+ timestamps): Intentionally creates 1 segment at 00:00:00
+- **Football** (any timestamps): Creates multiple segments, one per timestamp (max 20)
+- **Other sports**: Follow football pattern
+
+---
+
+### 13.5 Pipeline Stage Requirements
+
+#### 13.5.1 FETCH Stage
+
+**Input:** YouTube API search results for keyword "AIK" + trusted channel videos
+
+**Output:** Records in `youtube_videos_staging` table
+
+**Requirements:**
+
+1. **Dual-Track Discovery (CRITICAL)**
+   ```typescript
+   // Track 1: Keyword search (direct discovery)
+   const keywordVideos = await fetchFromYouTubeSearch(keyword);
+   
+   // Track 2: Trusted channels (contextual discovery)
+   const trustedChannels = await loadTrustedChannels(supabase, keyword);
+   for (const channel of trustedChannels) {
+     const channelVideos = await fetchAllFromChannel(channel, dateRange);
+     // maxResults: 50 per channel (not 10)
+   }
+   ```
+   
+   **Why Trusted Channels Matter:**
+   - Football/hockey highlight shows (Fotbollsmorgon, DobbTV, etc.) contain **multiple timestamps** in `full_description`
+   - These are the PRIMARY source for segment splitting (one video â†’ many segments)
+   - Without trusted channels, most videos would be single-segment (00:00:00 only)
+   
+   **Configuration:**
+   - Stored in `public.keyword_filters` table (`filter_type = 'trusted_channel'`)
+   - For AIK: 8 trusted channels (Fotbollsmorgon, DobbTV, Studio Allsvenskan, etc.)
+   - Each channel fetches up to 50 recent videos per pipeline run
+
+   **Security + Membership Toggle Note:**
+   - `public.keyword_filters` and `public.filter_config` are **internal configuration** tables.
+   - Edge Functions must read configuration via `api_public.get_keyword_filters()` / `api_public.get_filter_config()`.
+   - These RPCs are **service_role-only** (REVOKE from `anon`/`authenticated`), so they are **not affected by â€œsite open vs members-onlyâ€** and cannot be used directly from the frontend.
+
+2. **No View/Like Filtering**
+   ```typescript
+   // âœ… CORRECT: Accept all videos
+   let minViews = parseInt(url.searchParams.get('minViews') || '0', 10);
+   
+   // âŒ WRONG: Filter by popularity
+   let minViews = parseInt(url.searchParams.get('minViews') || '100', 10);
+   ```
+
+3. **Keyword Variants**
+   - Search for: "AIK", "Gnaget", "AIK:s", "AIKs", "AIK's", "AIKare"
+   - Case-sensitive: "AIK" (uppercase) preferred over "aik" (lowercase Urdu word)
+
+4. **Complete Description Required**
+   ```typescript
+   // Fetch FULL description from YouTube API
+   const fullDescription = videoDetails.snippet.description || '';
+   // Store COMPLETE description (not truncated)
+   p_full_description: fullDescription  // NOT video.description (truncated)
+   ```
+
+5. **European Language Filtering (UPDATED 2026-01-09)**
+   
+   **Threshold:** 0.5 (lowered from 0.7 to accept short Swedish titles like "AIK vs. BIK | Highlights")
+   
+   **Trusted Channel Whitelist (bypass language filter):**
+   These 9 pre-approved Swedish sports channels bypass ALL content filters (language, religion, negative keywords):
+   - HockeyAllsvenskan, Fotbollsmorgon, TV4Sport, DobbTV Fotboll
+   - AIK Highlights, TuttoSvenskan, Studio Allsvenskan
+   - Sportstudion, SVENSK SUPPORTERKULTUR
+   
+   ```typescript
+   // Filter by European languages BEFORE saving to staging
+   // CRITICAL: Skip language check for trusted channels (by discoveryMethod OR channel name)
+   const googleTranslateApiKey = Deno.env.get('GOOGLE_TRANSLATE_API');
+   
+   // Hardcoded whitelist: Trusted Swedish sports channels
+   const TRUSTED_CHANNELS = [
+     'HockeyAllsvenskan', 'Fotbollsmorgon', 'TV4Sport', 'DobbTV Fotboll',
+     'AIK Highlights', 'TuttoSvenskan', 'Studio Allsvenskan', 
+     'Sportstudion', 'SVENSK SUPPORTERKULTUR'
+   ];
+   
+   const trustedChannelVideos = videos.filter(v => v.discoveryMethod === 'trustedChannel');
+   const trustedByChannelName = videos.filter(v => TRUSTED_CHANNELS.includes(v.channelTitle));
+   const videosToCheck = videos.filter(v => 
+     v.discoveryMethod !== 'trustedChannel' && 
+     !TRUSTED_CHANNELS.includes(v.channelTitle)
+   );
+   
+   let europeanVideos = [...trustedChannelVideos, ...trustedByChannelName]; // Whitelisted Swedish sources
+   
+   if (googleTranslateApiKey) {
+     for (const video of videosToCheck) { // Check both keyword AND contextual (AI-filtered)
+       const languageCheck = await shouldIncludeVideoByLanguage(
+         video.title,
+         video.fullDescription || video.description, // Use full description for accuracy
+         googleTranslateApiKey,
+         0.5 // âœ… UPDATED 2026-01-09: Lowered from 0.7 to accept short Swedish titles
+       );
+       
+       if (languageCheck.include) {
+         europeanVideos.push(video);
+       }
+     }
+   }
+   
+   await saveVideosToStaging(europeanVideos, supabase);
+   ```
+   
+   **Allowed European Languages (33 total):**
+   - Nordic: `sv`, `no`, `da`, `fi`, `is`
+   - Western: `en`, `de`, `fr`, `es`, `it`, `nl`, `pt`
+   - Eastern: `pl`, `cs`, `sk`, `hu`, `ro`, `bg`, `hr`, `sl`, `sr`
+   - Baltic: `et`, `lv`, `lt`
+   - Other: `el` (Greek)
+   
+   **Blocked Languages:**
+   - `ur` (Urdu), `hi` (Hindi), `ar` (Arabic), `bn` (Bengali), `pa` (Punjabi)
+   - `fa` (Persian), `tr` (Turkish), `zh` (Chinese), `id` (Indonesian), `ms` (Malay)
+   
+   **Why 0.5 threshold (lowered from 0.7):**
+   - Short Swedish titles (e.g., "Ã–stersund vs. AIK | Highlights 7/1") produce 0.33-0.51 confidence
+   - These ARE Swedish but Google Translate is uncertain due to limited text (5-6 words)
+   - 0.5 = majority vote (>50% confidence is acceptable for European languages)
+   - Blocked languages still rejected by explicit check (before confidence threshold)
+   
+   **Why Filter in Fetch (Not Transform):**
+   - Saves YouTube API quota (don't fetch details for non-European videos)
+   - Prevents staging table pollution (was 1,400/day, now ~420/day)
+   - Transform capacity can keep up (420/day incoming vs 420/day capacity)
+   - Trusted channels skip check (known Swedish sources like Fotbollsmorgon, HockeyAllsvenskan)
+   
+   **Reference:** See `docs/LANGUAGE_FILTERING_ISSUE.md` for bug history (Urdu "Aik" spam)
+
+---
+
+#### 13.5.2 TRANSFORM Stage
+
+**Input:** `youtube_videos_staging` records
+
+**Output:** 
+- `youtube_videos_operational` (header records)
+- `video_segments` (line item records)
+
+**CRITICAL REQUIREMENT (Â§13, 2026-01-12):**
+
+
+---
+
+## Â§DIAGRAMS - Visual Pipeline Flowcharts (Lines 801-1001)
+
+**Purpose:** Index to visual flowcharts in docs/pipeline-analysis
+**Load this section:** `@file .cursor/rules/pipeline-rules.mdc [801, 1001]`
+
+**INSTRUKTION:** Denna sektion Ã¤r en POINTER till visuella diagrams. Ladda ALDRIG hela diagram-filer i context - anvÃ¤nd INDEX nedan fÃ¶r att hitta rÃ¤tt diagram och referera till det.
+
+---
+
+### ðŸ“Š DIAGRAM INDEX - Hierarkisk Navigation
+
+**Ladda detta INDEX:** `@file .cursor/rules/pipeline-rules.mdc [801, 1001]`
+
+**Location:** `docs/pipeline-analysis/`
+**Master Index:** `docs/pipeline-analysis/INDEX.md`
+
+#### YouTube Pipeline Diagrams
+
+| Diagram | Type | Purpose | Path |
+|---------|------|---------|------|
+| **A1_fetch_requirements.drawio** | Requirements | How fetch SHOULD work | `docs/pipeline-analysis/A1_fetch_requirements.drawio` |
+| **B1_fetch_implementation.drawio** | Implementation | How fetch ACTUALLY works (bottlenecks) | `docs/pipeline-analysis/B1_fetch_implementation.drawio` |
+| **A2_transform_requirements.drawio** | Requirements | How transform SHOULD work | `docs/pipeline-analysis/A2_transform_requirements.drawio` |
+| **B2_transform_implementation.drawio** | Implementation | How transform ACTUALLY works (bottlenecks) | `docs/pipeline-analysis/B2_transform_implementation.drawio` |
+| **A3_distribute_requirements.drawio** | Requirements | How distribute SHOULD work | `docs/pipeline-analysis/A3_distribute_requirements.drawio` |
+| **B3_distribute_implementation.drawio** | Implementation | How distribute ACTUALLY works (bottlenecks) | `docs/pipeline-analysis/B3_distribute_implementation.drawio` |
+| **C_fitgap_analysis.md** | Analysis | Detailed comparison + fixes | `docs/pipeline-analysis/C_fitgap_analysis.md` |
+
+#### News Pipeline Diagrams
+
+| Diagram | Type | Purpose | Path |
+|---------|------|---------|------|
+| **A_news_requirements.drawio** | Requirements | How news pipeline SHOULD work | `docs/pipeline-analysis/A_news_requirements.drawio` |
+| **B_news_implementation.drawio** | Implementation | How news pipeline ACTUALLY works (bottlenecks) | `docs/pipeline-analysis/B_news_implementation.drawio` |
+| **C_news_fitgap_analysis.md** | Analysis | Detailed comparison + fixes | `docs/pipeline-analysis/C_news_fitgap_analysis.md` |
+
+---
+
+### ðŸŽ¯ USAGE PATTERNS - NÃ¤r anvÃ¤nda vilken diagram?
+
+#### Scenario 1: FÃ¶rstÃ¥ Requirements (WHAT system ska gÃ¶ra)
+```
+User: "Hur ska fetch phase fungera enligt requirements?"
+Agent:
+1. LÃ¤ser quick.mdc â†’ Ser: Pipeline diagrams = pipeline-rules.mdc Â§DIAGRAMS
+2. Laddar: @file .cursor/rules/pipeline-rules.mdc [801, 1001]
+3. LÃ¤ser INDEX, hittar: A1_fetch_requirements.drawio
+4. Svarar: "Se diagram: docs/pipeline-analysis/A1_fetch_requirements.drawio"
+   - Beskriver vad diagrammet visar (utan att ladda hela filen)
+   - Ger key findings frÃ¥n INDEX.md
+```
+
+#### Scenario 2: FÃ¶rstÃ¥ Implementation (HOW system faktiskt fungerar)
+```
+User: "VarfÃ¶r fÃ¥r vi timeouts i transform phase?"
+Agent:
+1. LÃ¤ser quick.mdc â†’ Ser: Pipeline diagrams = pipeline-rules.mdc Â§DIAGRAMS
+2. Laddar: @file .cursor/rules/pipeline-rules.mdc [801, 1001]
+3. LÃ¤ser INDEX, hittar: B2_transform_implementation.drawio
+4. Laddar: @file docs/pipeline-analysis/INDEX.md [105, 125]
+5. LÃ¤ser "BOTTLENECK 3: AI Caption Download (BLOCKING, 3-8s per video)"
+6. Svarar med root cause + pointer till Fix 1.2 i C_fitgap_analysis.md
+```
+
+#### Scenario 3: Hitta Fixes (Konkreta lÃ¶sningar)
+```
+User: "Hur fixar jag quota exhaustion?"
+Agent:
+1. LÃ¤ser quick.mdc â†’ Ser: Pipeline diagrams = pipeline-rules.mdc Â§DIAGRAMS
+2. Laddar: @file .cursor/rules/pipeline-rules.mdc [801, 1001]
+3. LÃ¤ser INDEX, hittar: C_fitgap_analysis.md
+4. Laddar: @file docs/pipeline-analysis/C_fitgap_analysis.md [1, 100]
+5. Hittar Fix 1.3: Region prioritization with early exit
+6. Laddar den sektionen med kod-exempel
+7. Ger konkret fix
+```
+
+---
+
+### ðŸ” DECISION TREE - Vilken diagram ska jag anvÃ¤nda?
+
+#### FrÃ¥gan handlar om REQUIREMENTS (Hur det SKA fungera)?
+â†’ **A-series diagrams** (A1, A2, A3, A_news)
+- Exempel: "Vad Ã¤r requirements fÃ¶r fetch phase?" â†’ A1_fetch_requirements.drawio
+- Exempel: "Hur ska news pipeline fungera?" â†’ A_news_requirements.drawio
+
+#### FrÃ¥gan handlar om IMPLEMENTATION (Hur det FAKTISKT fungerar)?
+â†’ **B-series diagrams** (B1, B2, B3, B_news)
+- Exempel: "VarfÃ¶r fÃ¥r vi timeouts?" â†’ B2_transform_implementation.drawio
+- Exempel: "VarfÃ¶r Ã¤r fetch lÃ¥ngsam?" â†’ B1_fetch_implementation.drawio
+- Exempel: "VarfÃ¶r publiceras single-source articles?" â†’ B_news_implementation.drawio
+
+#### FrÃ¥gan handlar om FIXES (Hur fixa problem)?
+â†’ **C-series analysis** (C_fitgap_analysis.md, C_news_fitgap_analysis.md)
+- Exempel: "Hur fixar jag timeouts?" â†’ C_fitgap_analysis.md (Fix 1.2)
+- Exempel: "Hur fixar jag quota exhaustion?" â†’ C_fitgap_analysis.md (Fix 1.3)
+- Exempel: "Hur enforcar jag 2-source requirement?" â†’ C_news_fitgap_analysis.md (Fix 1.1)
+
+#### FrÃ¥gan handlar om OVERVIEW (Hela pipeline)?
+â†’ **INDEX.md eller README.md**
+- Exempel: "Ge mig en overview av pipeline issues" â†’ docs/pipeline-analysis/INDEX.md
+- Exempel: "Vad Ã¤r critical issues?" â†’ docs/pipeline-analysis/INDEX.md (lines 9-17)
+
+---
+
+### ðŸ“‹ QUICK REFERENCE - Vanliga FrÃ¥gor â†’ RÃ¤tt Diagram
+
+| FrÃ¥ga | Diagram | Sektion i INDEX.md |
+|-------|---------|-------------------|
+| "VarfÃ¶r timeouts i transform?" | B2_transform_implementation.drawio | Lines 72-84 (Transform bottlenecks) |
+| "VarfÃ¶r quota exhaustion?" | B1_fetch_implementation.drawio | Lines 58-69 (Fetch bottlenecks) |
+| "Hur fixa timeouts?" | C_fitgap_analysis.md | Lines 105-125 (Fix 1.2) |
+| "Hur fixa quota?" | C_fitgap_analysis.md | Lines 111-125 (Fix 1.3) |
+| "VarfÃ¶r single-source articles?" | B_news_implementation.drawio | Lines 321-328 (News bottlenecks) |
+| "Hur enforca 2-source?" | C_news_fitgap_analysis.md | Lines 280-283 (Fix 1.1) |
+| "Ge overview av alla issues" | INDEX.md | Lines 9-17 (Critical Issues) |
+| "Hur ska fetch fungera?" | A1_fetch_requirements.drawio | Lines 58-69 (Fetch requirements) |
+| "Hur ska transform fungera?" | A2_transform_requirements.drawio | Lines 72-84 (Transform requirements) |
+
+---
+
+### âš¡ CRITICAL RULES - Diagram Navigation
+
+1. **ALDRIG ladda hela diagram-filer (.drawio) i context**
+   - Drawio-filer Ã¤r XML, mycket stora, inte lÃ¤sbara
+   - AnvÃ¤nd INDEX.md fÃ¶r att fÃ¥ key findings
+
+2. **ALLTID ladda INDEX.md FÃ–RST**
+   - `@file docs/pipeline-analysis/INDEX.md [1, 100]`
+   - Hitta rÃ¤tt diagram i INDEX
+   - LÃ¤s key findings UTAN att ladda diagrammet
+
+3. **FÃ¶r fixes: Ladda C-series markdown**
+   - `@file docs/pipeline-analysis/C_fitgap_analysis.md [1, 100]`
+   - Hitta rÃ¤tt fix-sektion
+   - Ladda den sektionen med kod-exempel
+
+4. **FÃ¶r overview: Ladda README.md**
+   - `@file docs/pipeline-analysis/README.md [1, 100]`
+   - Ger helicopter perspective
+   - LÃ¤nkar till rÃ¤tt diagram fÃ¶r deep-dive
+
+---
+
+### ðŸ”— RELATION TO OTHER RULES FILES
+
+**From quick.mdc:**
+- User asks about pipeline diagrams
+- quick.mdc â†’ "Se pipeline-rules.mdc Â§DIAGRAMS"
+- Agent laddar: `@file .cursor/rules/pipeline-rules.mdc [801, 1001]`
+- Agent hittar rÃ¤tt diagram i INDEX
+
+**From requirements.mdc:**
+- Â§R1 YouTube Pipeline Requirements (text)
+- FÃ¶r VISUAL representation â†’ pipeline-rules.mdc Â§DIAGRAMS â†’ A1/A2/A3
+
+**From core-rules.mdc:**
+- Â§0.5 Edge Functions (implementation patterns)
+- FÃ¶r VISUAL pipeline flow â†’ pipeline-rules.mdc Â§DIAGRAMS â†’ B1/B2/B3
+
+**From advanced-rules.mdc:**
+- Historical decisions (WHY)
+- FÃ¶r VISUAL bottlenecks â†’ pipeline-rules.mdc Â§DIAGRAMS â†’ B-series
+
+---
+
+### ðŸ“Š DIAGRAM METADATA
+
+**Created:** 2026-01-14 (YouTube), 2026-01-20 (News)
+**Format:** DrawIO XML (not human-readable, use INDEX.md)
+**Total Files:** 11 diagrams + 3 analysis docs + 2 index files
+**Total Size:** ~8000 lines of analysis
+
+**Status:**
+- âœ… YouTube Pipeline: Analysis complete, fixes pending
+- âœ… News Pipeline: Analysis complete, fixes deployed (2026-01-20)
+
+**Key Findings:**
+- YouTube: 3 critical bottlenecks (duplicate work, sequential processing, overfetch)
+- News: 2 critical issues (single-source, no sport separation) - FIXED
+
+**Expected Impact (YouTube fixes):**
+- 56% quota reduction
+- 50% API call reduction
+- 65% faster execution
+- Timeout risk eliminated
+
+---
+
+**END OF Â§DIAGRAMS**
+
+**NÃ¤sta steg vid diagram-frÃ¥gor:**
+1. Ladda detta INDEX (lines 801-1001)
+2. Identifiera rÃ¤tt diagram (A/B/C-series)
+3. Ladda docs/pipeline-analysis/INDEX.md fÃ¶r key findings
+4. GE ALDRIG hela diagram-filer - referera till dem
+5. FÃ¶r fixes: Ladda C-series markdown med kod-exempel
+
+---
+
+## §14 Inngest Orchestration Patterns (Since 2026-01-21)
+
+**INSTRUKTION:** Ladda denna sektion: `@file .cursor/rules/pipeline-rules.mdc [1002, 1200]`
+
+**Migration Date:** 2026-01-21  
+**Status:** ✅ Production (code deployed)  
+**Impact:** Fixes RSS health logging (0% → 100%) and YouTube BOOT_ERROR  
+**Documentation:** See `docs/inngest-migration.md` for complete details
+
+---
+
+### 14.1 Architecture Overview
+
+**Current (Inngest-based):**
+```
+Cron/Manual Trigger
+  ↓ HTTP POST
+process-cron-queue (Supabase Edge Function)
+  ↓ Inngest Event (idempotent)
+Inngest Cloud Workflow Engine
+  ↓ Step 1: Fetch RSS (retry 3x)
+  ↓ Step 1b: Fetch Perplexity (retry 3x)  ← RSS pipeline only
+  ↓ Step 2: Transform (retry 3x)  
+  ↓ Step 3: Distribute (retry 3x)
+  ↓ Step 4: Log Health (guaranteed)
+Each step calls Supabase Edge Function
+```
+**Note:** The **live** RSS workflow used by Vercel is in `api/inngest.ts` (self-contained). `src/inngest/functions/rss-pipeline.ts` is the alternate definition; ensure both stay in sync (including step 1b Perplexity).
+
+**Legacy (Deprecated - kept for rollback):**
+```
+Cron/Manual → process-*-pipeline Edge Function → Direct HTTP calls
+```
+
+**Why Inngest:**
+- Step-level durability (checkpointing)
+- Independent retry (3x per step, not full pipeline)
+- Better cold start handling (fixes BOOT_ERROR)
+- Guaranteed health logging (fixes RSS 0% issue)
+- Built-in observability (Inngest UI)
+
+---
+
+### 14.2 Event Structure
+
+**YouTube Pipeline:**
+```typescript
+Event: 'youtube/pipeline.run'
+Data: {
+  keyword?: string;          // Default: 'AIK'
+  trigger_source?: string;   // 'cron', 'manual', 'backfill'
+  scheduled_at?: string;     // ISO timestamp
+}
+```
+
+**RSS Pipeline:**
+```typescript
+Event: 'rss/pipeline.run'
+Data: {
+  trigger_source?: string;   // 'cron', 'manual'
+  scheduled_at?: string;     // ISO timestamp
+}
+```
+
+---
+
+### 14.3 Idempotency Pattern (CRITICAL)
+
+**Format:** `{pipeline}-{source}-{date}-{4h-block}`
+
+**Implementation:**
+```typescript
+const date = new Date().toISOString().split('T')[0];
+const hourBlock = Math.floor(Date.now() / (4 * 60 * 60 * 1000));
+const idempotencyKey = `youtube-cron-${date}-${hourBlock}`;
+
+await inngest.send({
+  name: 'youtube/pipeline.run',
+  data: { keyword: 'AIK', trigger_source: 'cron' },
+  id: idempotencyKey,
+});
+```
+
+**Examples:**
+- `youtube-cron-2026-01-21-0` (00:00-03:59 UTC)
+- `youtube-cron-2026-01-21-1` (04:00-07:59 UTC)
+- `rss-cron-2026-01-21-2` (08:00-11:59 UTC)
+
+**Benefits:**
+- Prevents duplicate runs if cron triggers multiple times
+- Deterministic: Same 4h window = same key = deduplicated
+- Safe for retry scenarios (Inngest deduplicates automatically)
+
+---
+
+### 14.4 Workflow Step Pattern
+
+**Standard step structure:**
+```typescript
+const result = await step.run('step-name', async () => {
+  // Idempotent operation (safe to retry)
+  return await callEdgeFunction('function-name', { params });
+});
+```
+
+**Step naming convention:**
+- `fetch-videos` / `fetch-rss-articles` / `fetch-perplexity-articles` (RSS only, step 1b)
+- `transform-videos` / `transform-rss-articles`
+- `distribute-segments` / `distribute-rss-articles`
+- `log-health` (ALWAYS last step)
+
+**Retry behavior:**
+- Each step retries 3x on failure (deterministic)
+- Exponential backoff (Inngest default: 1s, 2s, 4s)
+- Previous step results preserved via durability
+
+---
+
+### 14.5 Health Logging (GUARANTEED)
+
+**CRITICAL PATTERN - ALWAYS last step:**
+```typescript
+await step.run('log-health', async () => {
+  const supabase = createClient(supabaseUrl, serviceKey);
+  const duration = Math.floor((Date.now() - startTime) / 1000);
+  
+  await supabase.rpc('log_pipeline_health', {
+    p_pipeline_type: 'youtube', // or 'rss'
+    p_trigger_source: trigger_source,
+    p_fetch_count: fetchResult.videosInserted || 0,
+    p_transform_count: transformResult.videosProcessed || 0,
+    p_distribute_count: distributeResult.segmentsDistributed || 0,
+    p_transform_iterations: transformResult.iterations || 0,
+    p_distribute_iterations: distributeResult.iterations || 0,
+    p_warnings: transformResult.warnings || [],
+    p_errors: [],
+    p_duration_seconds: duration
+  });
+});
+```
+
+**Why last step:**
+- Executes even if earlier steps partially fail
+- Inngest durability guarantees execution
+- **Fixes RSS Issue:** Old orchestrator never called this (0% logging)
+- **Fixes YouTube Issue:** Logged even if BOOT_ERROR occurs in earlier steps
+
+---
+
+### 14.6 Environment Variables
+
+**Vercel (for Inngest workflows):**
+- `RSPC_INNGEST_SIGNING_KEY` - Authentication
+- `RSPC_INNGEST_EVENT_KEY` - Event sending
+- `VITE_SUPABASE_URL` - Supabase project URL
+- `VITE_SUPABASE_SERVICE_ROLE_KEY` - Service role for Edge Function calls
+
+**Supabase Edge Secrets (for process-cron-queue):**
+- `RSPC_INNGEST_EVENT_KEY` - Required for inngest.send() in Deno runtime
+
+**Add secret:**
+```bash
+npx supabase secrets set RSPC_INNGEST_EVENT_KEY="<key>" --project-ref niacajcdefleobqtyrmi
+```
+
+---
+
+### 14.7 Cron Integration
+
+**File:** `supabase/functions/process-cron-queue/index.ts`
+
+**Pattern:**
+```typescript
+import { Inngest } from 'https://esm.sh/inngest@3.22.0';
+
+const inngest = new Inngest({
+  id: 'aikurerad-cron',
+  eventKey: Deno.env.get('RSPC_INNGEST_EVENT_KEY')!,
+});
+
+// In job processing:
+await inngest.send({
+  name: 'youtube/pipeline.run',
+  data: { keyword: job.keyword ?? 'AIK', trigger_source: 'cron' },
+  id: idempotencyKey,
+});
+```
+
+**Critical fix:** Return result data (includes idempotencyKey for tracking):
+```typescript
+return { 
+  success: true, 
+  message: result.message || 'Job processed successfully',
+  ...result // Spreads idempotencyKey, event name
+};
+```
+
+---
+
+### 14.8 Rollback Procedure
+
+**If issues arise (instant rollback):**
+
+1. **Edit** `supabase/functions/process-cron-queue/index.ts`:
+   ```typescript
+   // Uncomment OLD code:
+   const pipelineUrl = `${supabaseUrl}/functions/v1/process-youtube-pipeline`;
+   const pipelineResponse = await fetch(pipelineUrl, { ... });
+   
+   // Comment NEW code:
+   // await inngest.send({ ... });
+   ```
+
+2. **Deploy:**
+   ```bash
+   npx supabase functions deploy process-cron-queue
+   ```
+
+3. **Verify:**
+   - Check `process-youtube-pipeline` logs
+   - Monitor health table
+
+**Time:** < 5 minutes  
+**Risk:** None (no database changes to revert)
+
+**Why instant:** Migration is orchestration layer only - no schema changes, no data migrations
+
+---
+
+### 14.9 Files Reference
+
+**Inngest Workflows (Vercel):**
+- **RSS pipeline (live):** `api/inngest.ts` - Self-contained, includes step 1b `fetch-perplexity-articles`. This is the file Vercel builds and syncs to Inngest.
+- `src/inngest/client.ts` - Client config
+- `src/inngest/functions/youtube-pipeline.ts` - YouTube workflow
+- `src/inngest/functions/rss-pipeline.ts` - RSS workflow (keep in sync with api/inngest.ts)
+- `src/inngest/functions/helpers.ts` - Utilities
+- `src/api/inngest/route.ts` or Vercel API route that serves Inngest - See project config
+
+**Deprecated Orchestrators (Supabase - kept for rollback):**
+- `supabase/functions/process-youtube-pipeline/index.ts`
+- `supabase/functions/process-rss-pipeline/index.ts`
+
+**Active Edge Functions:**
+- `fetch-youtube-videos`, `transform-videos`, `distribute-segments`
+- `fetch-rss-articles`, **`fetch-perplexity-articles`** (RSS step 1b), `transform-rss-articles`, `distribute-rss-articles`
+
+---
+
+**END OF §14 Inngest Orchestration Patterns**
+
+**Relaterade sektioner:**
+- §13 Pipeline Implementation (legacy patterns)
+- core-rules.mdc §0.5 (Edge Functions)
+- requirements.mdc §R1 (Pipeline Requirements)
+---
+
+## §14 Inngest Orchestration Patterns (Since 2026-01-21)
+
+**INSTRUKTION:** Ladda denna sektion: `@file .cursor/rules/pipeline-rules.mdc [1002, 1150]`
+
+**Migration Date:** 2026-01-21  
+**Status:** ✅ Production (code deployed, testing in progress)  
+**Impact:** Fixes RSS health logging (0% → 100%) and YouTube BOOT_ERROR issues
+
+---
+
+### 14.1 Architecture Overview
+
+**Current (Inngest-based):**
+```
+Cron/Manual Trigger
+  ↓ HTTP POST
+process-cron-queue (Supabase Edge Function)
+  ↓ Inngest Event (idempotent)
+Inngest Cloud Workflow Engine
+  ↓ Step 1: Fetch (retry 3x)
+  ↓ Step 2: Transform (retry 3x)
+  ↓ Step 3: Distribute (retry 3x)
+  ↓ Step 4: Log Health (guaranteed)
+Each step calls Supabase Edge Function
+```
+
+**Legacy (Deprecated):**
+```
+Cron/Manual → process-*-pipeline Edge Function → Direct HTTP calls to Edge Functions
+```
+
+**Key Differences:**
+- ✅ Step-level durability (checkpointing between steps)
+- ✅ Independent retry (fetch success preserved if transform fails)
+- ✅ Better cold start handling (Inngest manages lifecycle)
+- ✅ Guaranteed health logging (dedicated step)
+- ✅ Built-in observability (Inngest UI)
+
+---
+
+### 14.2 Inngest Workflows
+
+**Location:** `src/inngest/functions/`
+
+**Files:**
+- `youtube-pipeline.ts` - YouTube Fetch → Transform → Distribute workflow
+- `rss-pipeline.ts` - RSS Fetch → Transform → Distribute workflow
+- `helpers.ts` - Shared Edge Function caller utility
+
+**Configuration:** `src/inngest/client.ts`
+
+---
+
+### 14.3 Event Structure
+
+**YouTube Pipeline:**
+```typescript
+Event: 'youtube/pipeline.run'
+Data: {
+  keyword?: string;          // Default: 'AIK'
+  trigger_source?: string;   // 'cron', 'manual', 'backfill'
+  scheduled_at?: string;     // ISO timestamp
+}
+```
+
+**RSS Pipeline:**
+```typescript
+Event: 'rss/pipeline.run'
+Data: {
+  trigger_source?: string;   // 'cron', 'manual'
+  scheduled_at?: string;     // ISO timestamp
+}
+```
+
+---
+
+### 14.4 Idempotency Pattern
+
+**Format:** `{pipeline}-{source}-{date}-{4h-block}`
+
+**Examples:**
+- `youtube-cron-2026-01-21-0` (00:00-03:59)
+- `youtube-cron-2026-01-21-1` (04:00-07:59)
+- `rss-cron-2026-01-21-2` (08:00-11:59)
+
+**Implementation:**
+```typescript
+const date = new Date().toISOString().split('T')[0];
+const hourBlock = Math.floor(Date.now() / (4 * 60 * 60 * 1000));
+const idempotencyKey = `youtube-cron-${date}-${hourBlock}`;
+
+await inngest.send({
+  name: 'youtube/pipeline.run',
+  data: { keyword: 'AIK', trigger_source: 'cron' },
+  id: idempotencyKey,
+});
+```
+
+**Benefits:**
+- Prevents duplicate runs if cron triggers multiple times in same 4h window
+- Deterministic: Same time window = same key = deduplicated
+- Safe for retry scenarios
+
+---
+
+### 14.5 Workflow Step Pattern
+
+**Standard step structure:**
+```typescript
+const result = await step.run('step-name', async () => {
+  // Idempotent operation (safe to retry)
+  return await callEdgeFunction('function-name', {
+    // parameters
+  });
+});
+```
+
+**Step naming convention:**
+- `fetch-videos` / `fetch-rss-articles`
+- `transform-videos` / `transform-rss-articles`
+- `distribute-segments` / `distribute-rss-articles`
+- `log-health` (always last step)
+
+**Retry behavior:**
+- Each step retries 3x on failure
+- Exponential backoff (Inngest default)
+- Previous step results preserved (durability)
+
+---
+
+### 14.6 Health Logging (ALWAYS Last Step)
+
+**Critical pattern:**
+```typescript
+// Step 4: Log health (idempotent - INSERT always creates new row)
+await step.run('log-health', async () => {
+  const supabase = createClient(supabaseUrl, serviceKey);
+  const duration = Math.floor((Date.now() - startTime) / 1000);
+  
+  await supabase.rpc('log_pipeline_health', {
+    p_pipeline_type: 'youtube', // or 'rss'
+    p_trigger_source: trigger_source,
+    p_fetch_count: fetchResult.videosInserted || 0,
+    p_transform_count: transformResult.videosProcessed || 0,
+    p_distribute_count: distributeResult.segmentsDistributed || 0,
+    p_transform_iterations: transformResult.iterations || 0,
+    p_distribute_iterations: distributeResult.iterations || 0,
+    p_warnings: transformResult.warnings || [],
+    p_errors: [],
+    p_duration_seconds: duration
+  });
+});
+```
+
+**Why last step:**
+- Guarantees health logging even if earlier steps fail
+- Inngest durability ensures step executes
+- Fixes RSS 0% logging issue (was missing in old orchestrator)
+
+---
+
+### 14.7 Benefits Over Legacy Orchestration
+
+| Feature | Legacy (Edge Function) | Inngest | Impact |
+|---|---|---|---|
+| **Durability** | No | Step-level checkpointing | Failed steps don't lose work |
+| **Retry** | Full pipeline restart | Per-step (3x each) | Faster recovery |
+| **Cold Start** | BOOT_ERROR issues | Managed by Inngest | More reliable |
+| **Health Logging** | Manual, inconsistent | Guaranteed step | RSS: 0% → 100% |
+| **Observability** | Manual logs | Inngest UI traces | Better debugging |
+| **Timeout** | 150-300s total | 10min per step | Handles long runs |
+| **Idempotency** | Manual | Built-in (event ID) | Prevents duplicates |
+
+---
+
+### 14.8 Cron Integration
+
+**File:** `supabase/functions/process-cron-queue/index.ts`
+
+**Old pattern (deprecated):**
+```typescript
+await fetch(`${supabaseUrl}/functions/v1/process-youtube-pipeline`, {
+  method: 'POST',
+  body: JSON.stringify({ keyword: 'AIK' })
+});
+```
+
+**New pattern (current):**
+```typescript
+const inngest = new Inngest({ 
+  id: 'aikurerad-cron',
+  eventKey: Deno.env.get('RSPC_INNGEST_EVENT_KEY')!
+});
+
+await inngest.send({
+  name: 'youtube/pipeline.run',
+  data: { keyword: 'AIK', trigger_source: 'cron' },
+  id: `youtube-cron-${date}-${hourBlock}`
+});
+```
+
+**Environment variable:** `RSPC_INNGEST_EVENT_KEY` (custom prefix, not standard `INNGEST_EVENT_KEY`)
+
+---
+
+### 14.9 Rollback Procedure
+
+**If issues arise:**
+
+1. **Revert cron triggers** (in `process-cron-queue/index.ts`):
+   - Uncomment old HTTP call to `process-*-pipeline`
+   - Comment out `inngest.send()`
+   - Deploy via: `npx supabase functions deploy process-cron-queue`
+
+2. **Verify rollback:**
+   - Monitor `process-youtube-pipeline` logs
+   - Check health table for new runs
+
+3. **No database changes required:**
+   - All tables unchanged
+   - RLS policies unchanged
+   - Migrations unchanged
+
+**Time to rollback:** < 5 minutes  
+**Risk:** None (only orchestration layer changed)
+
+---
+
+### 14.10 Monitoring & Debugging
+
+**Inngest Dashboard:**
+- URL: https://app.inngest.com/
+- View: All workflow runs, step-by-step execution
+- Features: Replay failed runs, inspect errors, monitor rates
+
+**Pipeline Health Table:**
+```sql
+-- Check recent runs
+SELECT pipeline_type, status, run_timestamp, errors
+FROM public.pipeline_health_log
+ORDER BY run_timestamp DESC
+LIMIT 10;
+
+-- Check for specific issues
+SELECT * FROM api_public.get_pipeline_health_issues();
+```
+
+**Common issues:**
+- Missing env vars: Check Vercel dashboard
+- Step failures: Replay in Inngest UI
+- Cold starts: Inngest handles automatically
+
+---
+
+**END OF §14 Inngest Orchestration Patterns**
+
+**Ladda denna sektion:** `@file .cursor/rules/pipeline-rules.mdc [1002, 1150]`  
+**Relaterade sektioner:** §13 (Pipeline Implementation), core-rules.mdc §0.5 (Edge Functions)

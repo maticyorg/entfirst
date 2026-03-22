@@ -1,0 +1,502 @@
+---
+description: "Advanced patterns, edge cases, historical decisions (WHY). Batch processing evolution, performance optimizations, security deep-dives, deprecated patterns. Load when understanding rationale behind design decisions or debugging complex edge cases."
+alwaysApply: false
+---
+
+# AIKurerad Advanced Rules - Historical Context & Edge Cases (File 5/5)
+
+**File Size:** ~16KB (safe for Cursor patterns match)  
+**Purpose:** WHY decisions were made - historical context, complex edge cases  
+**Mode:** Agent Decides (load when need deep context)
+
+**Part of 5-file split:**
+1. `quick.mdc` - Always loaded, STOP-WORDS, Section Map
+2. `core-rules.mdc` - Core implementation patterns (database, RLS, schema)
+3. `requirements.mdc` - Functional requirements (WHAT system must do)
+4. `pipeline-rules.mdc` - Pipeline implementation (HOW pipeline works)
+5. **`advanced-rules.mdc`** ← YOU ARE HERE (WHY, edge cases, history)
+
+**Referenced from:** `quick.mdc` → Advanced patterns  
+**On-demand loading:** `@file .cursor/rules/advanced-rules.mdc [LINE_START, LINE_END]`
+
+---
+
+## 📑 INDEX - Advanced Topics (Hierarkisk Navigation)
+
+**INSTRUKTION:** Ladda INDEX först (denna sektion), hitta rätt avsnitt, ladda ENDAST det avsnittet.
+
+**Ladda detta INDEX:** `@file .cursor/rules/advanced-rules.mdc [1, 70]`
+
+| Section | Lines | Topic | Command |
+|---------|-------|-------|---------|
+| **Batch Processing Evolution** | 70-170 | Why batch loop, timeout fixes | `@file advanced-rules.mdc [70, 170]` |
+| **Language Detection History** | 171-220 | Why Nordic languages added | `@file advanced-rules.mdc [171, 220]` |
+| **Negative Filtering Logic** | 221-280 | Complex filter patterns | `@file advanced-rules.mdc [221, 280]` |
+| **Performance Optimizations** | 281-350 | Index strategies, query optimization | `@file advanced-rules.mdc [281, 350]` |
+| **Security Deep-Dives** | 351-420 | Why SECURITY DEFINER decisions | `@file advanced-rules.mdc [351, 420]` |
+| **Legacy Patterns** | 421-500 | Deprecated but documented patterns | `@file advanced-rules.mdc [421, 500]` |
+
+**Usage Pattern:**
+```
+1. User asks: "Varför använder vi batch loop i transform?"
+2. Agent loads INDEX: @file advanced-rules.mdc [1, 70]
+3. Agent finds: Batch Processing Evolution = lines 70-170
+4. Agent loads: @file advanced-rules.mdc [70, 170]
+5. Agent reads historical context and answers
+```
+
+**When to Use This File:**
+- User asks "WHY?" questions about design decisions
+- Need to understand historical context
+- Debugging complex edge cases
+- Understanding deprecated patterns still in codebase
+- Performance optimization deep-dives
+
+**Relation to Other Files:**
+- **Requirements (WHAT):** See `requirements.mdc` for current requirements
+- **Implementation (HOW):** See `core-rules.mdc` and `pipeline-rules.mdc`
+- **This file (WHY):** Historical decisions, rationale, edge cases
+
+---
+
+**CRITICAL REQUIREMENT (§13, 2026-01-12):**
+```typescript
+// MUST use batch-loop to process ALL pending videos
+while (iteration < MAX_ITERATIONS) {
+  const videos = await getRPC('get_pending_staging_videos', { p_limit: 5 });
+  if (!videos || videos.length === 0) break; // Done!
+  
+  for (const video of videos) {
+    await transformVideo(video);
+  }
+}
+```
+
+**Configuration:**
+- **Batch size:** 5 videos (timeout prevention: 40-60s per batch)
+- **Max iterations:** 100 (500 videos max per run)
+- **Exit condition:** `get_pending_staging_videos` returns empty array
+
+**Sub-Requirements:**
+
+##### 13.5.2.1 Language Detection
+```typescript
+const detected = await detectLanguage(title, description, GOOGLE_API_KEY);
+if (!['sv', 'no', 'da', 'en'].includes(detected.language)) {
+  return reject("Language not Swedish/Nordic/English");
+}
+```
+
+##### 13.5.2.2 Negative Keyword Filtering
+```typescript
+const negativeKeywords = keyword_config.negative_filters.keywords;
+// Includes: pakistan, karachi, urdu, hindi, quran, mosque, etc.
+if (containsAny(title + description + channel, negativeKeywords)) {
+  return reject("Negative keyword found");
+}
+```
+
+##### 13.5.2.3 Channel Categorization (NEW 2026-01-12)
+```typescript
+// Compute channel_category for HomeTab segmentation
+function getChannelCategory(channelTitle: string): string {
+  const MATCH_CHANNELS = ['AIK Highlights', 'HockeyAllsvenskan', 'AIK Fotboll'];
+  const MEDIA_CHANNELS = ['Fotbollsmorgon', 'TV4Sport', 'Studio Allsvenskan', 'DobbTV Fotboll', 'TuttoSvenskan', 'Sportstudion'];
+  const VIRAL_CHANNELS = ['Swedish Ultras', 'SVENSK SUPPORTERKULTUR', 'Joakim Hall', 'Hungarian Football Vlogger', 'all about ultras', 'AIK Updates'];
+  
+  if (MATCH_CHANNELS.some(ch => channelTitle.includes(ch))) return 'match';
+  if (MEDIA_CHANNELS.some(ch => channelTitle.includes(ch))) return 'media';
+  if (VIRAL_CHANNELS.some(ch => channelTitle.includes(ch))) return 'viral';
+  return 'other';
+}
+
+// Store in operational + segments tables for HomeTab filtering
+await rpc('save_operational_video', { 
+  ...params, 
+  p_channel_category: getChannelCategory(video.channel_title) 
+});
+```
+
+**Categories:**
+- **match:** Highlights and match reports (AIK Highlights, HockeyAllsvenskan)
+- **media:** Magazine shows and podcasts (Fotbollsmorgon, TV4Sport)
+- **viral:** Supporter content and viral clips (Swedish Ultras, SVENSK SUPPORTERKULTUR)
+- **other:** Unclassified content
+
+##### 13.5.2.3 Segment Extraction Logic
+
+**Scenario A: Timestamps Found**
+```typescript
+const timestamps = full_description.match(/\d{1,2}:\d{2}(?::\d{2})?/g);
+
+if (timestamps && timestamps.length > 0) {
+  // Phase 1: Direct keyword check
+  for (const timestamp of timestamps) {
+    const textAfter = extractTextBetween(timestamp, nextTimestamp);
+    
+    // Check 1: Direct keyword match in segment text
+    if (/\b(AIK|Gnaget|AIK:s|AIKs|AIKare)\b/i.test(textAfter)) {
+      createSegment(timestamp, textAfter); // ✅ ACCEPT
+      continue;
+    }
+    
+    // Check 2: Title Context Match (for compilation videos)
+    // If video title is like "Player X on AIK | Other Topic", match segment text to "Player X"
+    if (matchesTitleContext(textAfter, video.title, ["AIK", "Gnaget"])) {
+      createSegment(timestamp, textAfter); // ✅ ACCEPT via Context
+    }
+  }
+  
+  // If Phase 1 found 0 segments → Phase 2: AI validation
+  if (segments.length === 0 && titleMentionsAIK) {
+    const aiSegments = await extractSegmentsWithAI(title, full_description, captions);
+    segments.push(...aiSegments);
+  }
+  
+  // If still 0 → fallback to default
+  if (segments.length === 0) {
+    createDefaultSegment('00:00:00', title);
+  }
+}
+```
+
+**Scenario B: No Timestamps**
+```typescript
+if (!timestamps || timestamps.length === 0) {
+  // Entire video is AIK-relevant (keyword in title/metadata)
+  createDefaultSegment('00:00:00', title);
+}
+```
+
+---
+
+#### 13.5.3 DISTRIBUTE Stage
+
+**Input:** `video_segments` with `distribution_status = 'pending'`
+
+**Output:** `video_segments` with `distribution_status = 'distributed'`
+
+**CRITICAL REQUIREMENT (§13, 2026-01-12):**
+```typescript
+// MUST use batch-loop to process ALL pending segments
+while (iteration < MAX_ITERATIONS) {
+  const segments = await getRPC('get_pending_segments', { 
+    p_keyword: keyword, 
+    p_limit: 100 
+  });
+  if (!segments || segments.length === 0) break; // Done!
+  
+  for (const segment of segments) {
+    await updateSegmentDistribution(segment);
+  }
+}
+
+// Refresh materialized views ONCE at end (not per batch)
+await refreshMaterializedView(`infosource_${keyword}`);
+```
+
+**Configuration:**
+- **Batch size:** 100 segments (fast DB updates, no external APIs)
+- **Max iterations:** 50 (5000 segments max per run)
+- **Exit condition:** `get_pending_segments` returns empty array
+- **Materialized view refresh:** Once after all batches complete
+
+**Requirements:**
+```sql
+-- Update distribution status (via RPC)
+SELECT api_public.update_segment_distribution(
+  p_segment_id := segment.id,
+  p_distribution_status := 'distributed',
+  p_distributed_at := now()
+);
+
+-- Segments become visible in api_public.video_segments_feed
+-- (filtered by WHERE distribution_status = 'distributed')
+```
+
+---
+
+### 13.6 Test Specification
+
+**Test files should be created at:**
+- `supabase/functions/_shared/__tests__/pipeline.requirements.test.ts`
+
+**Required Test Cases:**
+
+```typescript
+describe("§13 Pipeline Requirements", () => {
+  
+  test("Multiple AIK timestamps → Multiple segments", async () => {
+    const video = {
+      title: "Fotbollsmorgon",
+      full_description: "43:01 Erik Flataker om AIK\n1:02:35 Noa Bachner om AIK"
+    };
+    
+    const result = await transform(video);
+    
+    expect(result.segments).toHaveLength(2);
+    expect(result.segments[0].keyword_timestamp).toBe("43:01");
+    expect(result.segments[1].keyword_timestamp).toBe("1:02:35");
+    expect(result.segments[0].keyword_timestamp_description).toContain("Erik Flataker");
+    expect(result.segments[0].keyword_timestamp_description).not.toBe(video.title);
+  });
+  
+  test("No timestamps → Single default segment at 00:00:00", async () => {
+    const video = {
+      title: "AIK:s ALLA MÅL I ALLSVENSKAN 2025",
+      full_description: "Alla målen från vårat lag."
+    };
+    
+    const result = await transform(video);
+    
+    expect(result.segments).toHaveLength(1);
+    expect(result.segments[0].keyword_timestamp).toBe("00:00:00");
+    expect(result.segments[0].keyword_timestamp_seconds).toBe(0);
+  });
+  
+  test("Timestamps exist but no direct AIK → AI validation", async () => {
+    const video = {
+      title: "Flatakers syn på säsongen i AIK",
+      full_description: "43:01 Erik Flataker\n59:34 Reklampaus"
+    };
+    
+    const result = await transform(video, { aiEnabled: true });
+    
+    // AI should validate "43:01 Erik Flataker" as AIK-relevant based on title context
+    expect(result.segments.length).toBeGreaterThanOrEqual(1);
+    expect(result.segments.some(s => s.keyword_timestamp === "43:01")).toBe(true);
+  });
+  
+  test("Title NEVER used as keyword_timestamp_description fallback", async () => {
+    const video = {
+      title: "Test Video Title",
+      full_description: "No timestamps here, just description text."
+    };
+    
+    const result = await transform(video);
+    
+    // Even for default segment, description should NOT be the title
+    expect(result.segments[0].keyword_timestamp_description).not.toBe(video.title);
+  });
+  
+  test("minViews filtering disabled (accepts all view counts)", async () => {
+    const videoLowViews = { view_count: 5, title: "AIK video" };
+    const videoHighViews = { view_count: 100000, title: "AIK video" };
+    
+    const result1 = await fetch(videoLowViews);
+    const result2 = await fetch(videoHighViews);
+    
+    // Both should be accepted
+    expect(result1.accepted).toBe(true);
+    expect(result2.accepted).toBe(true);
+  });
+});
+```
+
+---
+
+### 13.7 Cross-References
+
+**Related Sections:**
+- §0.5 Edge Functions → JWT forwarding for transform-videos function
+- §0.6 Write Patterns → How segments are saved via RPC
+- §1 Schema Reality Check → Verify operational/segments table structure
+- §5 RLS Patterns → video_segments RLS policies
+- §12 Troubleshooting → PostgREST errors when accessing segments
+
+**Edge Function Files:**
+- `supabase/functions/fetch-youtube-videos/index.ts` - FETCH stage
+- `supabase/functions/transform-videos/index.ts` - TRANSFORM stage
+- `supabase/functions/distribute-segments/index.ts` - DISTRIBUTE stage
+
+**Migration Files:**
+- `supabase/migrations/20250115000002_video_segments.sql` - Segments table definition
+- `supabase/migrations/20250119000000_api_public_pipeline_rpc_functions.sql` - RPC functions for pipeline
+
+---
+
+### 13.8 Debugging Checklist
+
+**If segments are not being created:**
+1. ✅ Check `full_description` is populated (not empty/null)
+2. ✅ Verify timestamps exist in `full_description` using regex: `/\d{1,2}:\d{2}/`
+3. ✅ Check Phase 1 keyword filter: Does text after timestamp contain "AIK"?
+4. ✅ Verify Phase 2 AI validation triggers if Phase 1 = 0 matches
+5. ✅ Check `keyword_timestamp_description` ≠ `video_title` (title fallback bug)
+
+**If wrong number of segments created:**
+```sql
+-- Debug query: Count segments per video
+SELECT 
+  op.youtube_video_id,
+  op.title,
+  COUNT(vs.id) as segment_count,
+  array_agg(vs.keyword_timestamp ORDER BY vs.keyword_timestamp_seconds) as timestamps
+FROM public.youtube_videos_operational op
+LEFT JOIN public.video_segments vs ON vs.operational_video_id = op.id
+GROUP BY op.youtube_video_id, op.title
+ORDER BY segment_count DESC;
+```
+
+**If deep links not working:**
+```sql
+-- Verify deep link format
+SELECT 
+  youtube_video_id,
+  keyword_timestamp,
+  keyword_timestamp_seconds,
+  youtube_deep_link
+FROM public.video_segments
+WHERE youtube_deep_link NOT LIKE '%&t=%s';
+-- Should return 0 rows (all deep links should have &t=XXXs format)
+```
+
+---
+
+### 13.9 Trusted Channels Requirements
+
+**Purpose:** Trusted channels (Swedish sports media) produce long-form content where AIK is ONE segment among many topics. We fetch ALL videos from these channels, then use AI to extract ONLY the AIK-relevant segments with timestamp precision.
+
+#### Problem Statement
+- **Keyword search misses trusted content:** Videos like "Fotbollsmorgon 2025-12-30" rarely contain "AIK" in title
+- **AIK is a segment, not the video:** 2-hour show discusses 10 teams, AIK mentioned at 47:23-52:15
+- **Need timestamp precision:** User should jump directly to AIK discussion, not watch entire show
+
+#### Solution: Fetch All → AI Filter → Extract Segments
+
+**Trusted Channels List (9 channels):**
+Stored in `public.keyword_filters` with `filter_type='trusted_channel'`:
+- Fotbollsmorgon (priority: 90)
+- HockeyAllsvenskan (priority: 85)
+- TV4Sport (priority: 70)
+- DobbTV Fotboll (priority: 95)
+- **AIK Highlights** (priority: 85) - UPDATED 2026-01-01: Replaced "Lukas"
+- TuttoSvenskan (priority: 85)
+- Studio Allsvenskan (priority: 80)
+- Sportstudion (priority: 75)
+- SVENSK SUPPORTERKULTUR (priority: 65)
+
+**Content Filter Bypass (UPDATED 2026-01-09):**
+Videos from these channels bypass ALL negative content filters:
+- ✅ Language filter (assume Swedish, skip Google Translate API check)
+- ✅ Religion filter (no mosque/quran/prayer keyword checks)
+- ✅ Spam filter (no Pakistani/Indian/Chinese spam patterns)
+- ✅ Other team filter (no BIK/AIF/Djurgården rejection)
+- ⚠️ Keyword match STILL REQUIRED: Video must contain "AIK" to be fetched
+
+#### Pipeline Requirements
+
+**1. FETCH (ALL videos, no keyword filter):**
+- Fetch all recent videos from trusted channels via YouTube API
+- Mark with `discovery_method='trustedChannel'` AND `is_trusted=true`
+- NO keyword filtering at fetch stage
+- Daily cron: 06:00 UTC
+
+**2. TRANSFORM (AI relevance check + timestamp extraction):**
+- AI checks: Title + **full_description** + Captions for AIK relevance
+- **CRITICAL:** Must use `full_description` (complete YouTube description with timestamps), NOT `description` (150-char snippet)
+- If NOT relevant: Skip video entirely (does not reach operational)
+- If relevant: Extract ALL timestamps where AIK is mentioned
+- Copy `is_trusted=true` from staging → operational
+- **NEVER:** Manually create segments for trusted channels without AI check (will create spam)
+
+**3. DISTRIBUTE (segment creation with is_trusted flag):**
+- Create segment per timestamp with YouTube deep link `?t=XXs`
+- Copy `is_trusted=true` from operational → video_segments
+- ONLY AIK segments exposed (not full video)
+
+**4. EXPOSE (views and feeds):**
+- Home tab "Trendande Videor": Filter `WHERE is_trusted = true`
+- Video tab: Show ALL (trusted + keyword), sorted by `is_trusted DESC, published_at DESC`
+
+#### Data Model: is_trusted Flag
+
+**Flag propagation through pipeline:**
+```
+keyword_filters (trusted_channel)
+  ↓
+youtube_videos_staging.is_trusted = true
+  ↓
+youtube_videos_operational.is_trusted = true
+  ↓
+video_segments.is_trusted = true
+  ↓
+api_public.video_segments_feed.is_trusted (exposed to frontend)
+```
+
+**Schema changes:**
+- `ALTER TABLE youtube_videos_staging ADD COLUMN is_trusted BOOLEAN DEFAULT false`
+- `ALTER TABLE youtube_videos_operational ADD COLUMN is_trusted BOOLEAN DEFAULT false`
+- `ALTER TABLE video_segments ADD COLUMN is_trusted BOOLEAN DEFAULT false`
+- Indexes: `CREATE INDEX idx_staging_is_trusted ON youtube_videos_staging(is_trusted) WHERE is_trusted = true`
+
+#### Display Logic
+
+**Home Tab (only trusted):**
+```sql
+SELECT * FROM api_public.video_segments_feed
+WHERE is_trusted = true
+ORDER BY video_published_at DESC
+LIMIT 3;
+```
+
+**Video Tab (trusted first, then all):**
+```sql
+SELECT * FROM api_public.video_segments_feed
+ORDER BY is_trusted DESC NULLS LAST, video_published_at DESC
+LIMIT 50;
+```
+
+#### Cron Jobs
+
+**Daily Trusted Channels Fetch (06:00 UTC):**
+- Fetches last 7 days from all 9 trusted channels
+- ~450 videos/day (50 per channel)
+
+**Transform Queue (prioritize trusted):**
+- `ORDER BY is_trusted DESC, created_at ASC`
+
+**Distribute Queue (prioritize trusted):**
+- `ORDER BY is_trusted DESC, created_at ASC`
+
+#### Backfill Strategy
+
+**Historical data load (2025 → 2015):**
+- Year-by-year in descending order
+- All 9 channels per year
+- Max 50 videos/channel/year
+- Estimated: ~4,950 videos → ~1,500-2,000 AIK-relevant → ~3,000-5,000 segments
+
+**Script:** `backfill_trusted_channels_all_years.ps1`
+
+#### Deduplication
+
+If same `youtube_video_id` exists from both trusted fetch AND keyword fetch:
+- Keep trusted version (has AI check + is_trusted=true)
+- Delete keyword version
+- Unique constraint enforced at staging level
+
+#### Implementation Details
+
+**For detailed implementation (migrations, Edge Functions, scripts):**
+See: `docs/TRUSTED_CHANNELS_IMPLEMENTATION.md`
+
+**Cross-references:**
+- §13.5 Pipeline Stage Requirements (general pipeline flow)
+- §0.5 Edge Functions patterns (SERVICE_ROLE_KEY, JWT forwarding)
+- §8 Migrations header (additive-only rules)
+
+---
+
+## J) Governance Index (Cross-References)
+
+| Document | Purpose |
+|---|---|
+| `docs/FRONTEND_DEVELOPER_HANDOFF.md` | Complete API documentation for frontend developers |
+| `rules.mdc` § 5.5 | Security Definer Exceptions (legitimate patterns) |
+| `supabase/migrations/` | All database migrations with security patterns |
+
+---
+
+*This file should be referenced whenever starting work on the Aikurerad v2 project to maintain consistency and avoid breaking existing functionality.*
+
