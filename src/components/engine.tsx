@@ -7,6 +7,9 @@ import {
   CalendarDays,
   BarChart3,
   Cpu,
+  TrendingUp,
+  ShieldCheck,
+  Zap,
 } from "lucide-react";
 
 const sources = [
@@ -77,7 +80,38 @@ export function Engine() {
           </ul>
         </div>
 
-        <div className="mt-14 grid gap-4 md:grid-cols-2">
+        {/* Key metrics strip */}
+        <div className="mt-14 grid gap-4 sm:grid-cols-3">
+          <div className="flex items-start gap-3.5 rounded-xl border border-white/10 bg-zinc-900/40 p-5">
+            <TrendingUp className="h-5 w-5 text-brand shrink-0 mt-0.5" aria-hidden />
+            <div>
+              <p className="text-2xl font-semibold text-zinc-100">3.5&times;</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                More traffic for companies publishing 16+ articles/month (HubSpot, 13&thinsp;500 companies)
+              </p>
+            </div>
+          </div>
+          <div className="flex items-start gap-3.5 rounded-xl border border-white/10 bg-zinc-900/40 p-5">
+            <ShieldCheck className="h-5 w-5 text-brand shrink-0 mt-0.5" aria-hidden />
+            <div>
+              <p className="text-2xl font-semibold text-zinc-100">E-E-A-T</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                Experience, Expertise, Authoritativeness, Trustworthiness. Every article built to Google&rsquo;s Dec 2025 quality threshold.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-start gap-3.5 rounded-xl border border-white/10 bg-zinc-900/40 p-5">
+            <Zap className="h-5 w-5 text-brand shrink-0 mt-0.5" aria-hidden />
+            <div>
+              <p className="text-2xl font-semibold text-zinc-100">10 &rarr; 3k</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                10 articles &asymp; 3&thinsp;000 visitors/month. Each article is a permanent, compounding asset.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-8 grid gap-4 md:grid-cols-2">
           <blockquote className="rounded-xl border-l-2 border-brand/40 bg-zinc-900/30 px-5 py-4">
             <p className="text-sm text-muted-foreground leading-relaxed">
               &ldquo;AI is a driving factor throughout the entire media production chain, from creation
@@ -90,12 +124,12 @@ export function Engine() {
           </blockquote>
           <blockquote className="rounded-xl border-l-2 border-brand/40 bg-zinc-900/30 px-5 py-4">
             <p className="text-sm text-muted-foreground leading-relaxed">
-              &ldquo;Future media consumers will expect immediate, seamless access to relevant content
-              across multiple platforms. Data- and insight-driven strategies are increasingly important
-              for creating value.&rdquo;
+              &ldquo;Google (Nov 2025): We don&rsquo;t care if content is created by AI or humans.
+              We care if it&rsquo;s helpful and accurate. The threshold is E-E-A-T&mdash;verified sources
+              and expert depth decide.&rdquo;
             </p>
             <footer className="mt-3 text-xs font-mono text-zinc-500">
-              PwC &mdash; Global Entertainment &amp; Media Outlook
+              Google Search &mdash; Nov 2025 Quality Guidelines
             </footer>
           </blockquote>
         </div>

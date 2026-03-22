@@ -39,3 +39,5 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+docs/Generic_Pitch_v3 (1).pdf
+docs/Generic_Pitch_v3 (1).pptx

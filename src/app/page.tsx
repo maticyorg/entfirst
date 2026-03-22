@@ -1,6 +1,7 @@
 import { Navbar } from "@/components/navbar";
 import { Hero } from "@/components/hero";
 import { Services } from "@/components/services";
+import { Comparison } from "@/components/comparison";
 import { Engine } from "@/components/engine";
 import { Portfolio } from "@/components/portfolio";
 import { Proof } from "@/components/proof";
@@ -15,6 +16,7 @@ export default function Home() {
       <main id="main-content" className="flex-1">
         <Hero />
         <Services />
+        <Comparison />
         <Engine />
         <Portfolio />
         <Proof />

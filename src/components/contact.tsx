@@ -4,6 +4,7 @@ import { useState, FormEvent } from "react";
 import { MotionSection } from "@/components/motion-section";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ShieldCheck, CheckCircle2, ArrowRight } from "lucide-react";
 
 const CONTACT_EMAIL = "hello@enterprisefirst.ai";
 
@@ -29,6 +30,44 @@ export function Contact() {
   return (
     <MotionSection id="contact" className="scroll-mt-24 py-24 sm:py-28">
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
+        {/* Risk model banner */}
+        <div className="mb-12 rounded-2xl border border-brand/20 bg-brand/5 p-6 sm:p-8">
+          <div className="flex items-start gap-4">
+            <ShieldCheck className="h-7 w-7 text-brand shrink-0 mt-0.5" aria-hidden />
+            <div>
+              <h3 className="text-lg font-semibold text-zinc-100">
+                Low risk, measurable results, full transparency
+              </h3>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <div className="flex items-start gap-2.5">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand/15 text-brand text-xs font-bold">1</span>
+                  <div>
+                    <p className="text-sm font-medium text-zinc-200">Setup</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">Pipeline config, first articles live. 50% upfront.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2.5">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand/15 text-brand text-xs font-bold">2</span>
+                  <div>
+                    <p className="text-sm font-medium text-zinc-200">Verification</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">Up to 8 articles, indexing verified in GSC. Not satisfied? Walk away.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2.5">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand/15 text-brand text-xs font-bold">3</span>
+                  <div>
+                    <p className="text-sm font-medium text-zinc-200">Ongoing</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">10% of setup cost/month. Articles, keyword optimization, GSC reporting. 30-day cancellation.</p>
+                  </div>
+                </div>
+              </div>
+              <p className="mt-4 text-xs font-mono text-brand/80">
+                Maximum exposure: 50% of setup cost. No lock-in. No dependencies.
+              </p>
+            </div>
+          </div>
+        </div>
+
         <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-zinc-900/90 via-zinc-950 to-black p-8 sm:p-12 lg:p-16 overflow-hidden relative">
           <div className="pointer-events-none absolute -right-20 -top-20 h-64 w-64 rounded-full bg-brand/20 blur-3xl" />
           <div className="relative max-w-2xl">
@@ -37,7 +76,7 @@ export function Contact() {
               Ready to put AI to work?
             </h2>
             <p className="mt-4 text-muted-foreground text-lg">
-              Tell us about your use case—we will respond with next steps and a realistic timeline.
+              Tell us about your use case\u2014we respond with next steps and a realistic timeline.
             </p>
             <p className="mt-2 text-sm text-muted-foreground">
               Or email us directly at{" "}
